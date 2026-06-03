@@ -298,6 +298,7 @@ task.spawn(function()
 	local networkerRoll, inventoryServiceClient, xpTransferServiceClient
 	local rollServiceRemote, codeServiceRemote, inventoryServiceRemote
 	local rebirthServiceRemote, zonesServiceRemote, upgradeServiceRemote
+	local craftingServiceRemote, xpTransferMachineRemote
 	local boostServiceRemote, offlineEarningsRemote, indexServiceRemote, lootServiceRemote
 	local sourceFolder
 	local upgradeTreeModule, indexRewardsModule, boostServiceUtils, specialDiceUtils
@@ -500,9 +501,7 @@ task.spawn(function()
 		return nil
 	end
 
-	-- =====================================================================
 	-- ZONE BOUNDARY via POI.Baseplate
-	-- =====================================================================
 	local zoneBoundaryCache = { zoneId = nil, min = nil, max = nil, center = nil }
 
 	local function getZoneBoundary(zoneId)
@@ -901,10 +900,12 @@ task.spawn(function()
 		end,
 	})
 
+	-- ==================== REPLACED DICE STACKING LOGIC (Android fix) ====================
 	local selectedDice = {golden=true, diamond=true, void=true, galaxy=true}
 	local stackActive = false
 	local releaseActive = false
 	local paused = {golden=false, diamond=false, void=false, galaxy=false}
+	local stackMode = "Normal"
 
 	featureToggle(farmingTab, {
 		Name = "Auto Stack Dice",
@@ -920,6 +921,17 @@ task.spawn(function()
 					end
 				end
 			end
+		end,
+	})
+
+	farmingTab:CreateDropdown({
+		Name = "Stack Mode",
+		Options = {"Normal", "Smart"},
+		CurrentOption = {"Normal"},
+		MultipleOptions = false,
+		Flag = "StackMode",
+		Callback = function(opt)
+			stackMode = type(opt) == "table" and opt[1] or opt
 		end,
 	})
 
@@ -973,28 +985,94 @@ task.spawn(function()
 					end
 				end
 				if #toWatch == 0 then return end
-				local allReady = true
-				for _, dice in ipairs(toWatch) do
-					local prog = progression[dice]
-					local rolls = prog and prog.rollsUntilNext or math.huge
-					if rolls > 1 then
-						allReady = false
-						if paused[dice] then pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end) paused[dice] = false end
-					else
-						if not paused[dice] then pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, true) end) paused[dice] = true end
-					end
-				end
-				if allReady and releaseActive then
+				local currentMode = (rayfieldLibrary.Flags.StackMode and rayfieldLibrary.Flags.StackMode.CurrentOption and rayfieldLibrary.Flags.StackMode.CurrentOption[1]) or "Normal"
+				if currentMode == "Normal" then
+					local allReady = true
 					for _, dice in ipairs(toWatch) do
-						pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end)
-						paused[dice] = false
+						local prog = progression[dice]
+						local rolls = prog and prog.rollsUntilNext or math.huge
+						if rolls > 1 then
+							allReady = false
+							if paused[dice] then pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end) paused[dice] = false end
+						else
+							if not paused[dice] then pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, true) end) paused[dice] = true end
+						end
 					end
-					rayfieldLibrary:Notify({ Title = "Unleashed!", Content = "All selected dice stacked — releasing now.", Duration = 3 })
-					task.wait(2)
+					if allReady and releaseActive then
+						for _, dice in ipairs(toWatch) do
+							pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end)
+							paused[dice] = false
+						end
+						rayfieldLibrary:Notify({ Title = "Unleashed!", Content = "All selected dice stacked — releasing now.", Duration = 3 })
+						task.wait(2)
+					end
+				elseif currentMode == "Smart" then
+					local smartOrder = {"galaxy", "void", "diamond", "golden"}
+					local readyMap = {}
+					for _, dice in ipairs(toWatch) do
+						local prog = progression[dice]
+						local rolls = prog and prog.rollsUntilNext or math.huge
+						readyMap[dice] = rolls <= 1
+					end
+					local galaxyInWatch = false
+					for _, d in ipairs(toWatch) do if d == "galaxy" then galaxyInWatch = true break end end
+					local galaxyPaused = galaxyInWatch and paused["galaxy"]
+					if galaxyInWatch and not galaxyPaused then
+						for _, dice in ipairs(toWatch) do
+							if dice ~= "galaxy" then
+								if paused[dice] then
+									pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end)
+									paused[dice] = false
+								end
+							end
+						end
+						if readyMap["galaxy"] and not paused["galaxy"] then
+							pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", "galaxy", true) end)
+							paused["galaxy"] = true
+						end
+					else
+						for _, dice in ipairs(smartOrder) do
+							local inWatch = false
+							for _, d in ipairs(toWatch) do if d == dice then inWatch = true break end end
+							if inWatch then
+								if not paused[dice] then
+									local prevPaused = true
+									for _, prev in ipairs(smartOrder) do
+										if prev == dice then break end
+										local prevInWatch = false
+										for _, d in ipairs(toWatch) do if d == prev then prevInWatch = true break end end
+										if prevInWatch and not paused[prev] then prevPaused = false break end
+									end
+									if prevPaused and readyMap[dice] then
+										pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, true) end)
+										paused[dice] = true
+									elseif not readyMap[dice] then
+										if paused[dice] then
+											pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end)
+											paused[dice] = false
+										end
+									end
+								end
+							end
+						end
+						local allPaused = true
+						for _, dice in ipairs(toWatch) do
+							if not paused[dice] then allPaused = false break end
+						end
+						if allPaused and releaseActive then
+							for _, dice in ipairs(toWatch) do
+								pcall(function() networkerRoll:fetch("requestSetSpecialRollPaused", dice, false) end)
+								paused[dice] = false
+							end
+							rayfieldLibrary:Notify({ Title = "Unleashed!", Content = "Smart stack complete — releasing now.", Duration = 3 })
+							task.wait(2)
+						end
+					end
 				end
 			end)
 		end
 	end)
+	-- ==================== END OF DICE STACKING REPLACEMENT ====================
 
 	farmingTab:CreateSection("Zones")
 
@@ -1447,6 +1525,20 @@ task.spawn(function()
 
 	gameTab:CreateSection("Upgrades")
 
+	-- ==================== FIXED AUTO UPGRADE PURCHASING ====================
+	local UpgradeService = nil
+	task.spawn(function()
+		repeat task.wait(1) until modulesLoaded and dataServiceClient
+		local rs = game:GetService("ReplicatedStorage")
+		local ok, upgradeSvc = pcall(function() return require(rs.Source.Features.Upgrades.UpgradeServiceClient) end)
+		if ok and upgradeSvc then
+			local dummyClient = {}
+			dummyClient.networker = Networker.client.new("UpgradeService", dummyClient)
+			upgradeSvc.init(dummyClient)
+			UpgradeService = upgradeSvc
+		end
+	end)
+
 	featureToggle(gameTab, {
 		Name = "Auto Upgrade Purchasing",
 		CurrentValue = false,
@@ -1454,60 +1546,53 @@ task.spawn(function()
 		Callback = function(enabled)
 			if not enabled then return end
 			task.spawn(function()
-				local upgradeTree_local
-				local ok_tree, res_tree = pcall(function() return require(game:GetService("ReplicatedStorage").Source.Features.Upgrades.UpgradeTree) end)
-				if ok_tree then upgradeTree_local = res_tree end
-
-				local function getUpgradeIdsAndCosts()
-					local ids, costs = {}, {}
-					if not upgradeTree_local then return ids, costs end
-					for _, tree in ipairs(upgradeTree_local) do
-						for id, data in pairs(tree) do
-							if data and data.cost then table.insert(ids, id) costs[id] = data.cost end
-						end
-					end
-					return ids, costs
-				end
-
-				local upgradeIds, upgradeCosts = getUpgradeIdsAndCosts()
-
 				while true do
 					local flag = rayfieldLibrary.Flags.GameAutoUpgrade
 					if not flag or not flag.CurrentValue then break end
-					if not upgradeServiceClient_new or not dataServiceClient_new then task.wait(0.5) continue end
+					if not UpgradeService or not dataServiceClient or not upgradeTreeModule then
+						task.wait(2)
+						continue
+					end
 					pcall(function()
-						local upgradeMode = rayfieldLibrary.Flags.GameUpgradeMode and rayfieldLibrary.Flags.GameUpgradeMode.CurrentOption or {"All"}
+						local upgradeMode = rayfieldLibrary.Flags.GameUpgradeMode and
+											rayfieldLibrary.Flags.GameUpgradeMode.CurrentOption or {"All"}
 						local modeSet = {}
 						for _, m in ipairs(upgradeMode) do modeSet[m] = true end
-						local unlockedUpgrades = dataServiceClient_new:get("upgrades") or {}
-						local coins        = dataServiceClient_new:get("coins") or 0
-						local goop         = dataServiceClient_new:get("goop") or 0
-						local rollCurrency = dataServiceClient_new:get("rollCurrency") or 0
-						for _, upgradeId in ipairs(upgradeIds) do
-							if unlockedUpgrades[upgradeId] == true then continue end
-							local costInfo = upgradeCosts[upgradeId]
-							if not costInfo then continue end
-							local costAmount   = costInfo.amount or 0
-							local currencyType = costInfo.currency
-							local modeMatches = modeSet["All"]
-								or (modeSet["Coins"] and currencyType == "coins")
-								or (modeSet["Goop"] and currencyType == "goop")
-								or (modeSet["Rolls"] and currencyType == "rollCurrency")
-							if not modeMatches then continue end
-							local canAfford = (currencyType == "coins" and coins >= costAmount)
-								or (currencyType == "goop" and goop >= costAmount)
-								or (currencyType == "rollCurrency" and rollCurrency >= costAmount)
-							if canAfford then
-								local success = upgradeServiceClient_new:unlockUpgrade(upgradeId)
-								if success then
-									if currencyType == "coins" then coins = coins - costAmount
-									elseif currencyType == "goop" then goop = goop - costAmount
-									elseif currencyType == "rollCurrency" then rollCurrency = rollCurrency - costAmount end
-									unlockedUpgrades[upgradeId] = true
+
+						local unlockedUpgrades = dataServiceClient:get("upgrades") or {}
+						local coins = dataServiceClient:get("coins") or 0
+						local goop = dataServiceClient:get("goop") or 0
+						local rollCurrency = dataServiceClient:get("rollCurrency") or 0
+
+						local anyPurchased = false
+						for treeName, tree in pairs(upgradeTreeModule) do
+							for upgradeId, data in pairs(tree) do
+								if data.cost and not unlockedUpgrades[upgradeId] then
+									local cost = data.cost.amount or 0
+									local currency = data.cost.currency
+									local canBuy = false
+									if currency == "coins" and (modeSet["All"] or modeSet["Coins"]) then
+										canBuy = coins >= cost
+									elseif currency == "goop" and (modeSet["All"] or modeSet["Goop"]) then
+										canBuy = goop >= cost
+									elseif currency == "rollCurrency" and (modeSet["All"] or modeSet["Rolls"]) then
+										canBuy = rollCurrency >= cost
+									end
+									if canBuy then
+										local success = UpgradeService:unlockUpgrade(upgradeId)
+										if success then
+											anyPurchased = true
+											if currency == "coins" then coins = coins - cost
+											elseif currency == "goop" then goop = goop - cost
+											elseif currency == "rollCurrency" then rollCurrency = rollCurrency - cost end
+											unlockedUpgrades[upgradeId] = true
+										end
+										task.wait(0.1)
+									end
 								end
-								task.wait(0.2)
 							end
 						end
+						if not anyPurchased then task.wait(5) end
 					end)
 					task.wait(0.5)
 				end
@@ -1516,6 +1601,7 @@ task.spawn(function()
 	})
 
 	gameTab:CreateDropdown({ Name = "Upgrade Mode", Options = {"All","Coins","Goop","Rolls"}, CurrentOption = {"All"}, MultipleOptions = true, Flag = "GameUpgradeMode", Callback = function() end })
+	-- ==================== END OF UPGRADE FIX ====================
 
 	gameTab:CreateSection("Recipes")
 
@@ -2129,13 +2215,18 @@ task.spawn(function()
 						local flag = rayfieldLibrary.Flags.MiscUsePotions
 						if not flag or not flag.CurrentValue then break end
 						pcall(function()
-							if not boostServiceRemote or not dataServiceClient then return end
+							if not boostServiceRemote or not dataServiceClient or not boostServiceUtils then return end
 							local boosts = dataServiceClient:get("boosts") or {}
 							local selectedPotions = rayfieldLibrary.Flags.MiscPotionTypes and rayfieldLibrary.Flags.MiscPotionTypes.CurrentOption or {}
+							local serverTime = workspace:GetServerTimeNow()
 							for _, potionType in ipairs(selectedPotions) do
 								local boostData = boosts[potionType]
 								if boostData and (boostData.amount or 0) > 0 then
-									pcall(function() boostServiceRemote:InvokeServer("requestUseBoost", potionType) end)
+									local remaining = boostServiceUtils.getTimeRemaining(boostData, serverTime)
+									if remaining <= 0 then
+										pcall(function() boostServiceRemote:InvokeServer("requestUseBoost", potionType) end)
+										task.wait(0.5)
+									end
 								end
 							end
 						end)
@@ -2146,7 +2237,30 @@ task.spawn(function()
 		})
 
 		if #sortedBoostKinds > 0 then
-			miscTab:CreateDropdown({ Name="Potion Types", Options=sortedBoostKinds, CurrentOption={sortedBoostKinds[1]}, MultipleOptions=true, Flag="MiscPotionTypes", Callback=function() end })
+			miscTab:CreateDropdown({ Name="Potion Types", Options=sortedBoostKinds, CurrentOption=sortedBoostKinds, MultipleOptions=true, Flag="MiscPotionTypes", Callback=function() end })
+			featureButton(miscTab, {
+				Name = "Use All Selected Potions",
+				Callback = function()
+					task.spawn(function()
+						pcall(function()
+							if not boostServiceRemote or not dataServiceClient then
+								rayfieldLibrary:Notify({ Title="Error", Content="Boost service not ready", Duration=3 })
+								return
+							end
+							local selectedPotions = rayfieldLibrary.Flags.MiscPotionTypes and rayfieldLibrary.Flags.MiscPotionTypes.CurrentOption or {}
+							for _, potionType in ipairs(selectedPotions) do
+								local boosts = dataServiceClient:get("boosts") or {}
+								local amount = (boosts[potionType] or {}).amount or 0
+								for i = 1, amount do
+									pcall(function() boostServiceRemote:InvokeServer("requestUseBoost", potionType) end)
+									task.wait(0.2)
+								end
+							end
+							rayfieldLibrary:Notify({ Title="Potions", Content="Used all selected potions", Duration=3 })
+						end)
+					end)
+				end,
+			})
 		else
 			miscTab:CreateLabel("Potion types not yet loaded — enable after modules load.")
 		end
@@ -2171,12 +2285,19 @@ task.spawn(function()
 						if not flag or not flag.CurrentValue then break end
 						pcall(function()
 							if not inventoryServiceRemote or not dataServiceClient then return end
+							local queue = dataServiceClient:get("specialDiceQueue") or {}
+							local active = queue[1]
+							if active then
+								task.wait(1)
+								return
+							end
 							local items = dataServiceClient:get("items") or {}
 							local selectedDiceItems = rayfieldLibrary.Flags.MiscDiceTypes and rayfieldLibrary.Flags.MiscDiceTypes.CurrentOption or {}
 							for _, diceName in ipairs(selectedDiceItems) do
 								local itemId = nameToIdMap and nameToIdMap[diceName]
 								if itemId and (items[itemId] or 0) > 0 then
 									pcall(function() inventoryServiceRemote:InvokeServer("requestUseItem", itemId) end)
+									task.wait(0.5)
 								end
 							end
 						end)
@@ -2187,7 +2308,33 @@ task.spawn(function()
 		})
 
 		if #diceNames > 0 then
-			miscTab:CreateDropdown({ Name="Dice & Item Types", Options=diceNames, CurrentOption={diceNames[1]}, MultipleOptions=true, Flag="MiscDiceTypes", Callback=function() end })
+			miscTab:CreateDropdown({ Name="Dice & Item Types", Options=diceNames, CurrentOption=diceNames, MultipleOptions=true, Flag="MiscDiceTypes", Callback=function() end })
+			featureButton(miscTab, {
+				Name = "Use All Selected Dice",
+				Callback = function()
+					task.spawn(function()
+						pcall(function()
+							if not inventoryServiceRemote or not dataServiceClient then
+								rayfieldLibrary:Notify({ Title="Error", Content="Inventory service not ready", Duration=3 })
+								return
+							end
+							local selectedDiceItems = rayfieldLibrary.Flags.MiscDiceTypes and rayfieldLibrary.Flags.MiscDiceTypes.CurrentOption or {}
+							for _, diceName in ipairs(selectedDiceItems) do
+								local itemId = nameToIdMap and nameToIdMap[diceName]
+								if itemId then
+									local items = dataServiceClient:get("items") or {}
+									local amount = items[itemId] or 0
+									for i = 1, amount do
+										pcall(function() inventoryServiceRemote:InvokeServer("requestUseItem", itemId) end)
+										task.wait(0.2)
+									end
+								end
+							end
+							rayfieldLibrary:Notify({ Title="Dice", Content="Used all selected dice/items", Duration=3 })
+						end)
+					end)
+				end,
+			})
 		else
 			miscTab:CreateLabel("Dice types not yet loaded — enable after modules load.")
 		end
