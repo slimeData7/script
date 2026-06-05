@@ -36,7 +36,7 @@ local function sendLoadWebhook(version)
             local executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or "Unknown"
             local body = HttpService:JSONEncode({
                 embeds = {{
-                    title = "CactusHub — Script Loaded",
+                    title = "CactusHub",
                     description = "**User:** " .. player.Name .. "\n**Executor:** " .. tostring(executor) .. "\n**Version:** " .. version,
                     color = 5763719,
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
