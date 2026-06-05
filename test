@@ -15,6 +15,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local luckMonitorStarted = false
+local failReasons = {}
 
 local function notify(title, msg)
     pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", {
@@ -57,10 +58,14 @@ local function sendFailWebhook()
     task.spawn(function()
         pcall(function()
             local name, executor = getPlayerInfo()
+            local reasons = ""
+            for _, r in ipairs(failReasons) do
+                reasons = reasons .. "\n" .. r
+            end
             local body = HttpService:JSONEncode({
                 embeds = {{
                     title = "CactusHub — All Versions Failed",
-                    description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Versions Tried:** 1.3, 1.2, 1.1",
+                    description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Versions Tried:** 1.3, 1.2, 1.1\n\n**Reasons:**```" .. reasons .. "```",
                     color = 15548997,
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
                 }}
@@ -171,7 +176,9 @@ local function loadVersion(index)
         end)
 
         if not fetchOk or not src or src == "" then
-            warn("CactusHub | v" .. entry.version .. " fetch failed: " .. tostring(fetchErr))
+            local reason = "v" .. entry.version .. " fetch failed: " .. tostring(fetchErr)
+            warn("CactusHub | " .. reason)
+            table.insert(failReasons, reason)
             notify("Failed", "v" .. entry.version .. " fetch failed, trying next...")
             task.wait(2)
             loadVersion(index + 1)
@@ -180,7 +187,9 @@ local function loadVersion(index)
 
         local fn, compileErr = loadstring(src)
         if not fn then
-            warn("CactusHub | v" .. entry.version .. " compile failed: " .. tostring(compileErr))
+            local reason = "v" .. entry.version .. " compile failed: " .. tostring(compileErr)
+            warn("CactusHub | " .. reason)
+            table.insert(failReasons, reason)
             notify("Failed", "v" .. entry.version .. " compile failed, trying next...")
             task.wait(2)
             loadVersion(index + 1)
@@ -194,7 +203,11 @@ local function loadVersion(index)
             local ok, err = pcall(fn)
             execOk = ok
             execDone = true
-            if not ok then warn("CactusHub | v" .. entry.version .. " runtime error: " .. tostring(err)) end
+            if not ok then
+                local reason = "v" .. entry.version .. " runtime error: " .. tostring(err)
+                warn("CactusHub | " .. reason)
+                table.insert(failReasons, reason)
+            end
         end)
 
         local elapsed = 0
