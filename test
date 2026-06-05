@@ -171,12 +171,12 @@ local function loadVersion(index)
 
     task.spawn(function()
         local src
-        local fetchOk, fetchErr = pcall(function()
+        local fetchOk = pcall(function()
             src = game:HttpGet(entry.url)
         end)
 
         if not fetchOk or not src or src == "" then
-            local reason = "v" .. entry.version .. " fetch failed: " .. tostring(fetchErr)
+            local reason = "v" .. entry.version .. " fetch failed"
             warn("CactusHub | " .. reason)
             table.insert(failReasons, reason)
             notify("Failed", "v" .. entry.version .. " fetch failed, trying next...")
@@ -185,49 +185,15 @@ local function loadVersion(index)
             return
         end
 
-        local fn, compileErr = loadstring(src)
-        if not fn then
-            local reason = "v" .. entry.version .. " compile failed: " .. tostring(compileErr)
-            warn("CactusHub | " .. reason)
-            table.insert(failReasons, reason)
-            notify("Failed", "v" .. entry.version .. " compile failed, trying next...")
-            task.wait(2)
-            loadVersion(index + 1)
-            return
-        end
-
-        local execDone = false
-        local execOk = false
+        -- Fetch succeeded, fire and forget
+        onSuccess(entry.version)
 
         task.spawn(function()
-            local ok, err = pcall(fn)
-            execOk = ok
-            execDone = true
+            local ok, err = pcall(loadstring(src))
             if not ok then
-                local reason = "v" .. entry.version .. " runtime error: " .. tostring(err)
-                warn("CactusHub | " .. reason)
-                table.insert(failReasons, reason)
+                warn("CactusHub | v" .. entry.version .. " runtime error: " .. tostring(err))
             end
         end)
-
-        local elapsed = 0
-        repeat
-            task.wait(0.1)
-            elapsed = elapsed + 0.1
-        until execDone or elapsed >= 10
-
-        if not execDone then
-            onSuccess(entry.version)
-            return
-        end
-
-        if execOk then
-            onSuccess(entry.version)
-        else
-            notify("Failed", "v" .. entry.version .. " runtime failed, trying next...")
-            task.wait(2)
-            loadVersion(index + 1)
-        end
     end)
 end
 
