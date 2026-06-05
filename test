@@ -247,7 +247,7 @@ local function loadVersion(index)
         end)
 
         -- Wait for Rayfield to appear, no guessing — event-driven with 30s safety net
-        waitForRayfield(30, function(loaded)
+        waitForRayfield(15, function(loaded)
             if loaded then
                 onSuccess(entry.version)
             else
