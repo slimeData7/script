@@ -160,6 +160,59 @@ local function onSuccess(version)
     startLuckMonitor()
 end
 
+-- Rayfield detection
+
+local function getRayfield()
+    if gethui then
+        return gethui():FindFirstChild("Rayfield")
+    end
+    local CoreGui = game:GetService("CoreGui")
+    return CoreGui:FindFirstChild("Rayfield")
+        or (CoreGui:FindFirstChild("RobloxGui") and CoreGui.RobloxGui:FindFirstChild("Rayfield"))
+end
+
+local function waitForRayfield(timeout, callback)
+    -- Already loaded
+    if getRayfield() then
+        callback(true)
+        return
+    end
+
+    local fired = false
+    local connections = {}
+
+    local function done(success)
+        if fired then return end
+        fired = true
+        for _, c in ipairs(connections) do
+            pcall(function() c:Disconnect() end)
+        end
+        callback(success)
+    end
+
+    local function watchParent(parent)
+        if not parent then return end
+        local c = parent.ChildAdded:Connect(function(child)
+            if child.Name == "Rayfield" then
+                done(true)
+            end
+        end)
+        table.insert(connections, c)
+    end
+
+    if gethui then watchParent(gethui()) end
+    local CoreGui = game:GetService("CoreGui")
+    watchParent(CoreGui)
+    if CoreGui:FindFirstChild("RobloxGui") then
+        watchParent(CoreGui.RobloxGui)
+    end
+
+    -- Timeout fallback
+    task.delay(timeout, function()
+        done(false)
+    end)
+end
+
 local function loadVersion(index)
     if index > #VERSIONS then
         notify("Error", "All versions failed. Report at discord.gg/qMWFBWdcf")
@@ -185,13 +238,25 @@ local function loadVersion(index)
             return
         end
 
-        -- Fetch succeeded, fire and forget
-        onSuccess(entry.version)
-
+        -- Run the script
         task.spawn(function()
             local ok, err = pcall(loadstring(src))
             if not ok then
                 warn("CactusHub | v" .. entry.version .. " runtime error: " .. tostring(err))
+            end
+        end)
+
+        -- Wait for Rayfield to appear, no guessing — event-driven with 30s safety net
+        waitForRayfield(30, function(loaded)
+            if loaded then
+                onSuccess(entry.version)
+            else
+                local reason = "v" .. entry.version .. " Rayfield never appeared"
+                warn("CactusHub | " .. reason)
+                table.insert(failReasons, reason)
+                notify("Failed", "v" .. entry.version .. " failed, trying next...")
+                task.wait(2)
+                loadVersion(index + 1)
             end
         end)
     end)
