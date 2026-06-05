@@ -42,14 +42,13 @@ local function getPlayerInfo()
     return player.Name, tostring(executor)
 end
 
--- ─── Fetch with infinite retry + rate limit handling ─────────────────────────
+-- ─── Fetch: retries forever, handles rate limits ──────────────────────────────
 
 local function fetchWithRetry(url)
     local attempt = 0
     while true do
         attempt += 1
         local res = safeRequest({ Url = url, Method = "GET" })
-
         if res then
             if res.StatusCode == 200 and res.Body and res.Body ~= "" then
                 return res.Body
@@ -187,10 +186,10 @@ local function startLuckMonitor()
             local ok, body = pcall(function()
                 return HttpService:JSONEncode({
                     embeds = {{
-                        color  = 65280,
-                        title  = "Luck Server Found 🍀",
+                        color     = 65280,
+                        title     = "Luck Server Found 🍀",
                         thumbnail = thumb and { url = thumb } or nil,
-                        fields = {
+                        fields    = {
                             { name = "Active",            value = "true",                                                   inline = true  },
                             { name = "Multiplier",        value = tostring(mult),                                           inline = true  },
                             { name = "Time Remaining",    value = formatTime(remaining),                                    inline = true  },
@@ -212,9 +211,7 @@ local function startLuckMonitor()
 
         while true do
             local active, mult, remaining = getLuckInfo()
-            if active then
-                sendLuckWebhook(mult, remaining, game.JobId)
-            end
+            if active then sendLuckWebhook(mult, remaining, game.JobId) end
             task.wait(LUCK_INTERVAL)
         end
     end)
@@ -280,27 +277,11 @@ local function loadVersion(index)
     local entry = VERSIONS[index]
 
     task.spawn(function()
-        -- Will retry forever until a valid response comes through
         local src = fetchWithRetry(entry.url)
 
-        -- Compile check
-        local fn, compileErr = loadstring(src)
-        if not fn then
-            local reason = "v" .. entry.version .. " compile error: " .. tostring(compileErr)
-            warn("CactusHub | " .. reason)
-            table.insert(failReasons, reason)
-            notify("Failed", "v" .. entry.version .. " compile failed, trying next...")
-            task.wait(2)
-            loadVersion(index + 1)
-            return
-        end
-
-        -- Execute
+        -- Just run it, no compile check
         task.spawn(function()
-            local ok, err = pcall(fn)
-            if not ok then
-                warn("CactusHub | v" .. entry.version .. " runtime error: " .. tostring(err))
-            end
+            loadstring(src)()
         end)
 
         -- Wait for Rayfield, event-driven with 30s fallback
