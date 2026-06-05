@@ -17,8 +17,14 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local luckMonitorStarted = false
 local failReasons = {}
 
+-- ─── Utilities ───────────────────────────────────────────────────────────────
+
 local function notify(title, msg)
-    pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", {Title = title, Text = msg, Duration = 5})
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title, Text = msg, Duration = 5
+        })
+    end)
 end
 
 local function safeRequest(opt)
@@ -30,82 +36,289 @@ end
 
 local function getPlayerInfo()
     local player = Players.LocalPlayer
-    local executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or "Unknown"
+    local executor = (identifyexecutor and identifyexecutor())
+        or (getexecutorname and getexecutorname())
+        or "Unknown"
     return player.Name, tostring(executor)
 end
+
+-- ─── Fetch with infinite retry + rate limit handling ─────────────────────────
+
+local function fetchWithRetry(url)
+    local attempt = 0
+    while true do
+        attempt += 1
+        local res = safeRequest({ Url = url, Method = "GET" })
+
+        if res then
+            if res.StatusCode == 200 and res.Body and res.Body ~= "" then
+                return res.Body
+            elseif res.StatusCode == 429 then
+                local wait = tonumber(res.Headers and res.Headers["Retry-After"]) or 10
+                warn("CactusHub | Rate limited, waiting " .. wait .. "s")
+                task.wait(wait)
+            elseif res.StatusCode >= 500 then
+                warn("CactusHub | Server error " .. res.StatusCode .. ", retrying in 5s (attempt " .. attempt .. ")")
+                task.wait(5)
+            else
+                warn("CactusHub | Status " .. tostring(res.StatusCode) .. ", retrying in 3s (attempt " .. attempt .. ")")
+                task.wait(3)
+            end
+        else
+            warn("CactusHub | Request returned nil, retrying in 3s (attempt " .. attempt .. ")")
+            task.wait(3)
+        end
+    end
+end
+
+-- ─── Webhooks ─────────────────────────────────────────────────────────────────
 
 local function sendLoadWebhook(version)
     task.spawn(function()
         repeat task.wait() until game:IsLoaded()
-        local name, executor = getPlayerInfo()
-        local body = HttpService:JSONEncode({embeds = {{title = "CactusHub — Script Loaded", description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Version:** " .. version, color = 5763719, timestamp = os.date("!%Y-%m-%dT%H:%M:%S")}}})
-        safeRequest({Url = LOAD_WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body})
+        pcall(function()
+            local name, executor = getPlayerInfo()
+            local body = HttpService:JSONEncode({
+                embeds = {{
+                    title = "CactusHub — Script Loaded",
+                    description = "**User:** " .. name
+                        .. "\n**Executor:** " .. executor
+                        .. "\n**Version:** " .. version,
+                    color = 5763719,
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
+                }}
+            })
+            safeRequest({
+                Url = LOAD_WEBHOOK, Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body
+            })
+        end)
     end)
 end
 
 local function sendFailWebhook()
     task.spawn(function()
-        local name, executor = getPlayerInfo()
-        local body = HttpService:JSONEncode({embeds = {{title = "CactusHub — All Versions Failed", description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Versions Tried:** 1.3, 1.2, 1.1\n\n**Reasons:**```" .. table.concat(failReasons, "\n") .. "
-```", color = 15548997, timestamp = os.date("!%Y-%m-%dT%H:%M:%S")}}})
-        safeRequest({Url = FAIL_WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body})
+        pcall(function()
+            local name, executor = getPlayerInfo()
+            local reasons = table.concat(failReasons, "\n")
+            local body = HttpService:JSONEncode({
+                embeds = {{
+                    title = "CactusHub — All Versions Failed",
+                    description = "**User:** " .. name
+                        .. "\n**Executor:** " .. executor
+                        .. "\n**Versions Tried:** 1.3, 1.2, 1.1"
+                        .. "\n\n**Reasons:**```\n" .. reasons .. "\n```",
+                    color = 15548997,
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
+                }}
+            })
+            safeRequest({
+                Url = FAIL_WEBHOOK, Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body
+            })
+        end)
     end)
 end
+
+-- ─── Luck Monitor ─────────────────────────────────────────────────────────────
 
 local function startLuckMonitor()
     if luckMonitorStarted then return end
     luckMonitorStarted = true
+
     task.spawn(function()
         local sentFor = {}
-        while true do
-            local ok, LuckLadder = pcall(function() return require(ReplicatedStorage.Source.Features.LuckLadder.LuckLadderServiceClient) end)
-            if ok and LuckLadder then
-                local active, mult, remaining = false, "N/A", 0
-                pcall(function() active = LuckLadder:isActive(); mult = LuckLadder:getCurrentMultiplier(); remaining = LuckLadder:getTimeRemaining() end)
-                if active and not sentFor[game.JobId] then
-                    sentFor[game.JobId] = true
-                    local body = HttpService:JSONEncode({embeds = {{color = 65280, title = "Luck Server Found 🍀", fields = {{name = "Active", value = "true", inline = true}, {name = "Multiplier", value = tostring(mult), inline = true}, {name = "Time", value = tostring(remaining), inline = true}, {name = "Join", value = "game:GetService('TeleportService'):TeleportToPlaceInstance(" .. game.PlaceId .. ", '" .. game.JobId .. "')", inline = false}}}}})
-                    safeRequest({Url = LUCK_WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body})
+        local placeId = game.PlaceId
+
+        local function formatTime(sec)
+            sec = tonumber(sec)
+            if not sec or sec <= 0 then return "Ended" end
+            return string.format("%02d:%02d", math.floor(sec / 60), sec % 60)
+        end
+
+        local function getAssetThumbnail()
+            local thumb
+            pcall(function()
+                local res = safeRequest({
+                    Url = "https://thumbnails.roblox.com/v1/assets?assetIds="
+                        .. ASSET_ID .. "&size=420x420&format=Png&isCircular=false",
+                    Method = "GET"
+                })
+                if res and res.Body then
+                    local data = HttpService:JSONDecode(res.Body)
+                    thumb = data and data.data and data.data[1] and data.data[1].imageUrl
                 end
+            end)
+            return thumb
+        end
+
+        local function getLuckInfo()
+            local ok, LuckLadder = pcall(function()
+                return require(ReplicatedStorage.Source.Features.LuckLadder.LuckLadderServiceClient)
+            end)
+            if not ok or not LuckLadder then return false, nil, nil end
+            local active, mult, remaining = false, "N/A", 0
+            pcall(function()
+                active    = LuckLadder:isActive()
+                mult      = LuckLadder:getCurrentMultiplier()
+                remaining = LuckLadder:getTimeRemaining()
+            end)
+            return active, mult, remaining
+        end
+
+        local function sendLuckWebhook(mult, remaining, jobId)
+            if sentFor[jobId] then return end
+            sentFor[jobId] = true
+
+            local playerCount = #Players:GetPlayers()
+            local maxPlayers  = Players.MaxPlayers
+            local joinLink    = string.format(
+                "https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s",
+                placeId, jobId
+            )
+            local executorCmd = string.format(
+                'game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s", game:GetService("Players").LocalPlayer)',
+                placeId, jobId
+            )
+            local thumb = getAssetThumbnail()
+
+            local ok, body = pcall(function()
+                return HttpService:JSONEncode({
+                    embeds = {{
+                        color  = 65280,
+                        title  = "Luck Server Found 🍀",
+                        thumbnail = thumb and { url = thumb } or nil,
+                        fields = {
+                            { name = "Active",            value = "true",                                                   inline = true  },
+                            { name = "Multiplier",        value = tostring(mult),                                           inline = true  },
+                            { name = "Time Remaining",    value = formatTime(remaining),                                    inline = true  },
+                            { name = "Players",           value = tostring(playerCount) .. " / " .. tostring(maxPlayers),   inline = true  },
+                            { name = "Click to Join",     value = "[Join Server](" .. joinLink .. ")",                      inline = true  },
+                            { name = "Paste in Executor", value = "```\n" .. executorCmd .. "\n```",                        inline = false },
+                        }
+                    }}
+                })
+            end)
+            if not ok then return end
+
+            safeRequest({
+                Url = LUCK_WEBHOOK, Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = body
+            })
+        end
+
+        while true do
+            local active, mult, remaining = getLuckInfo()
+            if active then
+                sendLuckWebhook(mult, remaining, game.JobId)
             end
             task.wait(LUCK_INTERVAL)
         end
     end)
 end
 
-local function getSirius()
-    return (gethui and gethui():FindFirstChild("Sirius")) or game:GetService("CoreGui"):FindFirstChild("Sirius")
+-- ─── Rayfield Detection ───────────────────────────────────────────────────────
+
+local function getRayfield()
+    local CoreGui = game:GetService("CoreGui")
+    if gethui then
+        local h = gethui():FindFirstChild("Rayfield")
+        if h then return h end
+    end
+    return CoreGui:FindFirstChild("Rayfield")
+        or (CoreGui:FindFirstChild("RobloxGui") and CoreGui.RobloxGui:FindFirstChild("Rayfield"))
 end
 
-local function loadVersion(index)
-    if index > #VERSIONS then notify("Error", "All versions failed."); sendFailWebhook(); return end
-    local entry = VERSIONS[index]
-    
-    local src, err
-    repeat
-        local req = safeRequest({Url = entry.url, Method = "GET"})
-        if req and req.StatusCode == 200 then src = req.Body break end
-        task.wait(2)
-    until false -- Simplified for brevity/no retry limit
+local function waitForRayfield(timeout, callback)
+    if getRayfield() then callback(true) return end
 
-    local success, runtimeErr = pcall(loadstring(src))
-    if not success then
-        table.insert(failReasons, "v" .. entry.version .. " error: " .. tostring(runtimeErr))
-        loadVersion(index + 1)
+    local fired = false
+    local connections = {}
+
+    local function done(success)
+        if fired then return end
+        fired = true
+        for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+        callback(success)
+    end
+
+    local function watch(parent)
+        if not parent then return end
+        table.insert(connections, parent.ChildAdded:Connect(function(child)
+            if child.Name == "Rayfield" then done(true) end
+        end))
+    end
+
+    if gethui then watch(gethui()) end
+    local CoreGui = game:GetService("CoreGui")
+    watch(CoreGui)
+    if CoreGui:FindFirstChild("RobloxGui") then watch(CoreGui.RobloxGui) end
+
+    task.delay(timeout, function() done(false) end)
+end
+
+-- ─── On Success ───────────────────────────────────────────────────────────────
+
+local function onSuccess(version)
+    notify("Loaded", "CactusHub v" .. version .. " loaded.")
+    sendLoadWebhook(version)
+    startLuckMonitor()
+end
+
+-- ─── Version Loader ───────────────────────────────────────────────────────────
+
+local function loadVersion(index)
+    if index > #VERSIONS then
+        notify("Error", "All versions failed. Report at discord.gg/qMWFBWdcf")
+        sendFailWebhook()
         return
     end
 
-    local start = tick()
-    repeat task.wait(0.5) until getSirius() or (tick() - start > 30)
-    
-    if getSirius() then
-        notify("Loaded", "v" .. entry.version .. " active.")
-        sendLoadWebhook(entry.version)
-        startLuckMonitor()
-    else
-        table.insert(failReasons, "v" .. entry.version .. " UI timeout")
-        loadVersion(index + 1)
-    end
+    local entry = VERSIONS[index]
+
+    task.spawn(function()
+        -- Will retry forever until a valid response comes through
+        local src = fetchWithRetry(entry.url)
+
+        -- Compile check
+        local fn, compileErr = loadstring(src)
+        if not fn then
+            local reason = "v" .. entry.version .. " compile error: " .. tostring(compileErr)
+            warn("CactusHub | " .. reason)
+            table.insert(failReasons, reason)
+            notify("Failed", "v" .. entry.version .. " compile failed, trying next...")
+            task.wait(2)
+            loadVersion(index + 1)
+            return
+        end
+
+        -- Execute
+        task.spawn(function()
+            local ok, err = pcall(fn)
+            if not ok then
+                warn("CactusHub | v" .. entry.version .. " runtime error: " .. tostring(err))
+            end
+        end)
+
+        -- Wait for Rayfield, event-driven with 30s fallback
+        waitForRayfield(30, function(loaded)
+            if loaded then
+                onSuccess(entry.version)
+            else
+                local reason = "v" .. entry.version .. " Rayfield never appeared"
+                warn("CactusHub | " .. reason)
+                table.insert(failReasons, reason)
+                notify("Failed", "v" .. entry.version .. " failed, trying next...")
+                task.wait(2)
+                loadVersion(index + 1)
+            end
+        end)
+    end)
 end
+
+-- ─── Boot ─────────────────────────────────────────────────────────────────────
 
 loadVersion(1)
