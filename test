@@ -5,6 +5,7 @@ local VERSIONS = {
 }
 
 local LOAD_WEBHOOK = "https://discord.com/api/webhooks/1505625971519389930/M486V4Vxl8aRftnn9E5coxtrREdECj3k9oM6xeP3yFMR8fw97e-8SSc8WUhyJrxUjkNC"
+local FAIL_WEBHOOK = "https://discord.com/api/webhooks/1484979057342025849/Lmt1_pr3ZhczCAOWJLFh9id9Oa1BJjmVXOf_HlDJWND-aoXHAZu4VQF9z0pOgozJLJCe"
 local LUCK_WEBHOOK = "https://discord.com/api/webhooks/1511601904889892897/6RXabOVta5tJivjtFy9bE2w311srNmcp-k5DT0XsNXR71Z9JygY2FGiEb_O1NirFh9V7"
 local ASSET_ID = "74725529332053"
 local LUCK_INTERVAL = 120
@@ -17,7 +18,7 @@ local luckMonitorStarted = false
 
 local function notify(title, msg)
     pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", {
-        Title = title, Text = msg, Duration = 15
+        Title = title, Text = msg, Duration = 5
     })
 end
 
@@ -28,21 +29,43 @@ local function safeRequest(opt)
     return ok and res or nil
 end
 
+local function getPlayerInfo()
+    local player = Players.LocalPlayer
+    local executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or "Unknown"
+    return player.Name, tostring(executor)
+end
+
 local function sendLoadWebhook(version)
     task.spawn(function()
         repeat task.wait() until game:IsLoaded()
         pcall(function()
-            local player = Players.LocalPlayer
-            local executor = (identifyexecutor and identifyexecutor()) or (getexecutorname and getexecutorname()) or "Unknown"
+            local name, executor = getPlayerInfo()
             local body = HttpService:JSONEncode({
                 embeds = {{
-                    title = "CactusHub",
-                    description = "**User:** " .. player.Name .. "\n**Executor:** " .. tostring(executor) .. "\n**Version:** " .. version,
+                    title = "CactusHub — Script Loaded",
+                    description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Version:** " .. version,
                     color = 5763719,
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
                 }}
             })
             safeRequest({ Url = LOAD_WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+        end)
+    end)
+end
+
+local function sendFailWebhook()
+    task.spawn(function()
+        pcall(function()
+            local name, executor = getPlayerInfo()
+            local body = HttpService:JSONEncode({
+                embeds = {{
+                    title = "CactusHub — All Versions Failed",
+                    description = "**User:** " .. name .. "\n**Executor:** " .. executor .. "\n**Versions Tried:** 1.3, 1.2, 1.1",
+                    color = 15548997,
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%S")
+                }}
+            })
+            safeRequest({ Url = FAIL_WEBHOOK, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
         end)
     end)
 end
@@ -135,6 +158,7 @@ end
 local function loadVersion(index)
     if index > #VERSIONS then
         notify("Error", "All versions failed. Report at discord.gg/qMWFBWdcf")
+        sendFailWebhook()
         return
     end
 
