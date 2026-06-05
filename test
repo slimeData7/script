@@ -17,7 +17,7 @@ local luckMonitorStarted = false
 
 local function notify(title, msg)
     pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", {
-        Title = title, Text = msg, Duration = 5
+        Title = title, Text = msg, Duration = 15
     })
 end
 
