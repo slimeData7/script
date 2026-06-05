@@ -13,6 +13,8 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local luckMonitorStarted = false
+
 local function notify(title, msg)
     pcall(game:GetService("StarterGui").SetCore, game:GetService("StarterGui"), "SendNotification", {
         Title = title, Text = msg, Duration = 5
@@ -46,6 +48,8 @@ local function sendLoadWebhook(version)
 end
 
 local function startLuckMonitor()
+    if luckMonitorStarted then return end
+    luckMonitorStarted = true
     task.spawn(function()
         local sentFor = {}
         local placeId = game.PlaceId
@@ -122,6 +126,12 @@ local function startLuckMonitor()
     end)
 end
 
+local function onSuccess(version)
+    notify("Loaded", "v" .. version .. " loaded.")
+    sendLoadWebhook(version)
+    startLuckMonitor()
+end
+
 local function loadVersion(index)
     if index > #VERSIONS then
         notify("Error", "All versions failed. Report at discord.gg/qMWFBWdcf")
@@ -169,10 +179,13 @@ local function loadVersion(index)
             elapsed = elapsed + 0.1
         until execDone or elapsed >= 10
 
-        if not execDone or execOk then
-            notify("Loaded", "v" .. entry.version .. " loaded.")
-            sendLoadWebhook(entry.version)
-            startLuckMonitor()
+        if not execDone then
+            onSuccess(entry.version)
+            return
+        end
+
+        if execOk then
+            onSuccess(entry.version)
         else
             notify("Failed", "v" .. entry.version .. " runtime failed, trying next...")
             task.wait(2)
