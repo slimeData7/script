@@ -20,13 +20,12 @@ local redeemRemote = coreRemoteRequest and safeWait(coreRemoteRequest, "CashDrop
 local newDropRemote = coreRemoteSignal and safeWait(coreRemoteSignal, "CashDropService.New", 10)
 
 local LocalTycoon, ClientTycoonBalances, ClientTycoonPurchases, TycoonAnalyzer, Balance
-pcall(function()
-	LocalTycoon = require(RS.Modules.Tycoon.LocalTycoon)
-	ClientTycoonBalances = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances)
-	ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases)
-	TycoonAnalyzer = require(RS.Modules.Tycoon.Component.TycoonAnalyzer)
-	Balance = require(RS.Balance)
-end)
+
+pcall(function() LocalTycoon = require(RS.Modules.Tycoon.LocalTycoon) end)
+pcall(function() ClientTycoonBalances = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances) end)
+pcall(function() ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases) end)
+pcall(function() TycoonAnalyzer = require(RS.Modules.Tycoon.Component.TycoonAnalyzer) end)
+pcall(function() Balance = require(RS.Balance) end)
 
 local myTycoon
 if LocalTycoon then
@@ -57,7 +56,11 @@ local character = player.Character or player.CharacterAdded:Wait()
 local hrp = character:WaitForChild("HumanoidRootPart")
 local humanoid = character:WaitForChild("Humanoid")
 
-local tycoonInstance = myTycoon and myTycoon.Instance or nil
+local tycoonInstance
+if myTycoon and myTycoon.Instance then
+	tycoonInstance = myTycoon.Instance
+end
+
 local tycoonRemotes = tycoonInstance and safeWait(tycoonInstance, "Remotes", 10) or nil
 local phoneOfferRemote = tycoonRemotes and safeWait(tycoonRemotes, "PhoneOffer", 10) or nil
 local wakeRemote = tycoonRemotes and safeWait(tycoonRemotes, "WakeIncomeStream", 10) or nil
