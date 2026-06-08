@@ -5,56 +5,105 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
 
-local redeemRemote = RS:WaitForChild("Core"):WaitForChild("RemoteRequest"):WaitForChild("CashDropService.Redeem")
-local newDropRemote = RS:WaitForChild("Core"):WaitForChild("RemoteSignal"):WaitForChild("CashDropService.New")
+local function safeWait(parent, name, timeout)
+	timeout = timeout or 10
+	local ok, result = pcall(function() return parent:WaitForChild(name, timeout) end)
+	if ok and result then return result end
+	return nil
+end
 
-local LocalTycoon = require(RS.Modules.Tycoon.LocalTycoon)
-local ClientTycoonBalances = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances)
-local ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases)
-local TycoonAnalyzer = require(RS.Modules.Tycoon.Component.TycoonAnalyzer)
-local Balance = require(RS.Balance)
+local core = safeWait(RS, "Core", 15)
+local coreRemoteRequest = core and safeWait(core, "RemoteRequest", 10)
+local coreRemoteSignal = core and safeWait(core, "RemoteSignal", 10)
 
-local myTycoon = LocalTycoon.get()
-if not myTycoon then repeat task.wait() until LocalTycoon.get() myTycoon = LocalTycoon.get() end
-if not myTycoon:IsLoaded() then myTycoon:WaitForLoaded() end
+local redeemRemote = coreRemoteRequest and safeWait(coreRemoteRequest, "CashDropService.Redeem", 10)
+local newDropRemote = coreRemoteSignal and safeWait(coreRemoteSignal, "CashDropService.New", 10)
 
-local balances = myTycoon:GetComponent(ClientTycoonBalances)
-local purchasesComp = myTycoon:GetComponent(ClientTycoonPurchases)
-local analyzer = myTycoon:GetComponent(TycoonAnalyzer)
+local LocalTycoon, ClientTycoonBalances, ClientTycoonPurchases, TycoonAnalyzer, Balance
+pcall(function()
+	LocalTycoon = require(RS.Modules.Tycoon.LocalTycoon)
+	ClientTycoonBalances = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances)
+	ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases)
+	TycoonAnalyzer = require(RS.Modules.Tycoon.Component.TycoonAnalyzer)
+	Balance = require(RS.Balance)
+end)
+
+local myTycoon
+if LocalTycoon then
+	pcall(function()
+		myTycoon = LocalTycoon.get()
+		if not myTycoon then
+			local t = 0
+			repeat task.wait(0.5) t = t + 0.5 myTycoon = LocalTycoon.get() until myTycoon or t > 30
+		end
+		if myTycoon and myTycoon.IsLoaded and not myTycoon:IsLoaded() then
+			if myTycoon.WaitForLoaded then myTycoon:WaitForLoaded() end
+		end
+	end)
+end
+
+local function safeGetComponent(comp)
+	if not myTycoon or not comp then return nil end
+	local ok, result = pcall(function() return myTycoon:GetComponent(comp) end)
+	return ok and result or nil
+end
+
+local balances = safeGetComponent(ClientTycoonBalances)
+local purchasesComp = safeGetComponent(ClientTycoonPurchases)
+local analyzer = safeGetComponent(TycoonAnalyzer)
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local hrp = character:WaitForChild("HumanoidRootPart")
 local humanoid = character:WaitForChild("Humanoid")
 
-local tycoonInstance = myTycoon.Instance
-local tycoonRemotes = tycoonInstance:WaitForChild("Remotes")
-local phoneOfferRemote = tycoonRemotes:WaitForChild("PhoneOffer")
-local wakeRemote = tycoonRemotes:WaitForChild("WakeIncomeStream")
-local streams = tycoonInstance:WaitForChild("Values"):WaitForChild("Income"):WaitForChild("Streams")
+local tycoonInstance = myTycoon and myTycoon.Instance or nil
+local tycoonRemotes = tycoonInstance and safeWait(tycoonInstance, "Remotes", 10) or nil
+local phoneOfferRemote = tycoonRemotes and safeWait(tycoonRemotes, "PhoneOffer", 10) or nil
+local wakeRemote = tycoonRemotes and safeWait(tycoonRemotes, "WakeIncomeStream", 10) or nil
+
+local streams
+pcall(function()
+	streams = tycoonInstance
+		and tycoonInstance:WaitForChild("Values", 10)
+		and tycoonInstance.Values:WaitForChild("Income", 10)
+		and tycoonInstance.Values.Income:WaitForChild("Streams", 10)
+		or nil
+end)
+
+local treesFolder
+pcall(function()
+	local constant = tycoonInstance and tycoonInstance:FindFirstChild("Constant")
+	treesFolder = constant and constant:FindFirstChild("Trees")
+end)
+local treeList = treesFolder and treesFolder:GetChildren() or {}
 
 local antiAfkConn = nil
 local function startAntiAfk()
-    antiAfkConn = RunService.Heartbeat:Connect(function()
-        player:Move(Vector3.new(0, 0, 0))
-    end)
-    local VU = game:GetService("VirtualUser")
-    player.Idled:Connect(function()
-        VU:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-        task.wait(1)
-        VU:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-    end)
+	pcall(function()
+		antiAfkConn = RunService.Heartbeat:Connect(function()
+			player:Move(Vector3.new(0, 0, 0))
+		end)
+	end)
+	pcall(function()
+		local VU = game:GetService("VirtualUser")
+		player.Idled:Connect(function()
+			VU:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+			task.wait(1)
+			VU:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+		end)
+	end)
 end
 startAntiAfk()
 
 local Window = Rayfield:CreateWindow({
-    Name = "Cactus Hub  |  discord.gg/cactushub",
-    LoadingTitle = "Cactus Hub",
-    LoadingSubtitle = "discord.gg/cactushub",
-    Theme = "Default",
-    DisableRayfieldPrompts = true,
-    ConfigurationSaving = { Enabled = false },
-    KeySystem = false,
+	Name = "Cactus Hub  |  discord.gg/cactushub",
+	LoadingTitle = "Cactus Hub",
+	LoadingSubtitle = "discord.gg/cactushub",
+	Theme = "Default",
+	DisableRayfieldPrompts = true,
+	ConfigurationSaving = { Enabled = false },
+	KeySystem = false,
 })
 
 local MainTab     = Window:CreateTab("Main",      72133739568650)
@@ -67,106 +116,128 @@ MainTab:CreateSection("System")
 
 local fpsLabel = MainTab:CreateLabel("FPS: --   |   Ping: -- ms")
 
+local lastFpsUpdate = 0
+local frameCount = 0
 RunService.Heartbeat:Connect(function()
-    local fps  = math.floor(1 / RunService.Heartbeat:Wait())
-    local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-    fpsLabel:Set(("FPS: %d   |   Ping: %d ms"):format(fps, math.floor(ping)))
+	frameCount = frameCount + 1
+	local now = tick()
+	if now - lastFpsUpdate >= 1 then
+		local fps = frameCount
+		frameCount = 0
+		lastFpsUpdate = now
+		pcall(function()
+			local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+			fpsLabel:Set(("FPS: %d   |   Ping: %d ms"):format(fps, math.floor(ping)))
+		end)
+	end
 end)
 
 MainTab:CreateSection("Info")
 
 MainTab:CreateParagraph({
-    Title = "Latest Update",
-    Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
+	Title = "Latest Update",
+	Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
 })
 
 MainTab:CreateSection("Utilities")
 
 MainTab:CreateToggle({
-    Name = "Anti AFK",
-    CurrentValue = true,
-    Flag = "AntiAfkToggle",
-    Callback = function(value)
-        if not value and antiAfkConn then
-            antiAfkConn:Disconnect()
-            antiAfkConn = nil
-        elseif value and not antiAfkConn then
-            startAntiAfk()
-        end
-    end,
+	Name = "Anti AFK",
+	CurrentValue = true,
+	Flag = "AntiAfkToggle",
+	Callback = function(value)
+		if not value and antiAfkConn then
+			pcall(function() antiAfkConn:Disconnect() end)
+			antiAfkConn = nil
+		elseif value and not antiAfkConn then
+			startAntiAfk()
+		end
+	end,
 })
 
 MainTab:CreateButton({
-    Name = "Copy Discord",
-    Callback = function()
-        setclipboard("discord.gg/cactushub")
-        Rayfield:Notify({ Title = "Copied", Content = "discord.gg/cactushub", Duration = 2 })
-    end,
+	Name = "Copy Discord",
+	Callback = function()
+		pcall(function() setclipboard("discord.gg/cactushub") end)
+		Rayfield:Notify({ Title = "Copied", Content = "discord.gg/cactushub", Duration = 2 })
+	end,
 })
 
 local PREFIXES = {
-    { "Staircase", "Staircase" },
-    { "Republic",  "Republic"  },
-    { "Robotics",  "Robotics"  },
-    { "Trading",   "Trading"   },
-    { "Labs",      "Labs"      },
-    { "Depot",     "Depot"     },
-    { "Dash",      "Dash"      },
-    { "X",         "X"         },
+	{ "Staircase", "Staircase" },
+	{ "Republic",  "Republic"  },
+	{ "Robotics",  "Robotics"  },
+	{ "Trading",   "Trading"   },
+	{ "Labs",      "Labs"      },
+	{ "Depot",     "Depot"     },
+	{ "Dash",      "Dash"      },
+	{ "X",         "X"         },
 }
 
 local function getCategory(name)
-    for _, pair in ipairs(PREFIXES) do
-        if name:find("^" .. pair[1]) then return pair[2] end
-    end
-    return "Other"
+	for _, pair in ipairs(PREFIXES) do
+		if name:find("^" .. pair[1]) then return pair[2] end
+	end
+	return "Other"
 end
 
 local function getUniqueCategories()
-    local cats = {}
-    for name in pairs(analyzer:GetPurchases()) do
-        cats[getCategory(name)] = true
-    end
-    local list = { "All" }
-    for cat in pairs(cats) do table.insert(list, cat) end
-    table.sort(list)
-    return list
+	local cats = {}
+	if analyzer then
+		pcall(function()
+			for name in pairs(analyzer:GetPurchases()) do
+				cats[getCategory(name)] = true
+			end
+		end)
+	end
+	local list = { "All" }
+	for cat in pairs(cats) do table.insert(list, cat) end
+	table.sort(list)
+	return list
 end
 
 local function getPurchaseStats()
-    local totalBought = 0
-    local totalItems = 0
-    for name, _ in pairs(analyzer:GetPurchases()) do
-        totalItems = totalItems + 1
-        if purchasesComp:IsPurchased(name) then
-            totalBought = totalBought + 1
-        end
-    end
-    return totalBought, totalItems
+	local totalBought = 0
+	local totalItems = 0
+	if not analyzer or not purchasesComp then return totalBought, totalItems end
+	pcall(function()
+		for name in pairs(analyzer:GetPurchases()) do
+			totalItems = totalItems + 1
+			if purchasesComp:IsPurchased(name) then
+				totalBought = totalBought + 1
+			end
+		end
+	end)
+	return totalBought, totalItems
 end
 
 local function getAffordableItems(category)
-    local cash = balances:GetCash()
-    local items = {}
-    for name, purchase in pairs(analyzer:GetPurchases()) do
-        if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
-            local price = purchase:GetPrice()
-            if price and price <= cash then
-                local cat = getCategory(name)
-                if category == "All" or cat == category then
-                    table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
-                end
-            end
-        end
-    end
-    table.sort(items, function(a, b) return a.price < b.price end)
-    return items
+	local items = {}
+	if not analyzer or not purchasesComp or not balances then return items end
+	pcall(function()
+		local cash = balances:GetCash()
+		for name, purchase in pairs(analyzer:GetPurchases()) do
+			if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
+				local price = purchase:GetPrice()
+				if price and price <= cash then
+					local cat = getCategory(name)
+					if category == "All" or cat == category then
+						table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
+					end
+				end
+			end
+		end
+	end)
+	table.sort(items, function(a, b) return a.price < b.price end)
+	return items
 end
 
 local function buyItem(purchase)
-    local remote = purchase.Instance:FindFirstChild("Purchase")
-    if not remote or not remote:IsA("RemoteFunction") then return end
-    remote:InvokeServer(false)
+	pcall(function()
+		local remote = purchase.Instance:FindFirstChild("Purchase")
+		if not remote or not remote:IsA("RemoteFunction") then return end
+		remote:InvokeServer(false)
+	end)
 end
 
 local autoBuyEnabled = false
@@ -181,51 +252,50 @@ local totalBought, totalItems = getPurchaseStats()
 local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
 
 GameTab:CreateDropdown({
-    Name = "Category",
-    Options = getUniqueCategories(),
-    CurrentOption = { "All" },
-    Flag = "CategoryDropdown",
-    Callback = function(selected)
-        currentCategory = selected[1] or "All"
-        local bought, total = getPurchaseStats()
-        buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
-    end,
+	Name = "Category",
+	Options = getUniqueCategories(),
+	CurrentOption = { "All" },
+	Flag = "CategoryDropdown",
+	Callback = function(selected)
+		currentCategory = selected[1] or "All"
+		local bought, total = getPurchaseStats()
+		buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+	end,
 })
 
 GameTab:CreateToggle({
-    Name = "Enable Auto Buy",
-    CurrentValue = false,
-    Flag = "AutoBuyToggle",
-    Callback = function(value)
-        autoBuyEnabled = value
-        local bought, total = getPurchaseStats()
-        buyStatusLabel:Set("Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
-        if value then
-            if buyThread and coroutine.status(buyThread) ~= "dead" then return end
-            buyThread = task.spawn(function()
-                while autoBuyEnabled do
-                    local affordable = getAffordableItems(currentCategory)
-                    if #affordable > 0 then
-                        buyItem(affordable[1].purchaseObj)
-                        Rayfield:Notify({ Title = "Bought", Content = affordable[1].display, Duration = 1.5 })
-                    end
-                    task.wait(0.5)
-                    local b, t = getPurchaseStats()
-                    buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
-                end
-            end)
-        end
-    end,
+	Name = "Enable Auto Buy",
+	CurrentValue = false,
+	Flag = "AutoBuyToggle",
+	Callback = function(value)
+		autoBuyEnabled = value
+		local bought, total = getPurchaseStats()
+		buyStatusLabel:Set("Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+		if value then
+			if buyThread and coroutine.status(buyThread) ~= "dead" then return end
+			buyThread = task.spawn(function()
+				while autoBuyEnabled do
+					local affordable = getAffordableItems(currentCategory)
+					if #affordable > 0 then
+						buyItem(affordable[1].purchaseObj)
+						Rayfield:Notify({ Title = "Bought", Content = affordable[1].display, Duration = 1.5 })
+					end
+					task.wait(0.5)
+					local b, t = getPurchaseStats()
+					buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
+				end
+			end)
+		end
+	end,
 })
 
 GameTab:CreateButton({
-    Name = "Refresh Stats",
-    Callback = function()
-        local bought, total = getPurchaseStats()
-        buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
-        print(string.format("📊 Buttons bought: %d / %d", bought, total))
-        Rayfield:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", bought, total), Duration = 2 })
-    end,
+	Name = "Refresh Stats",
+	Callback = function()
+		local bought, total = getPurchaseStats()
+		buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+		Rayfield:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", bought, total), Duration = 2 })
+	end,
 })
 
 GameTab:CreateSection("Auto Upgrade")
@@ -233,30 +303,30 @@ GameTab:CreateSection("Auto Upgrade")
 local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled")
 
 GameTab:CreateToggle({
-    Name = "Enable Auto Upgrade",
-    CurrentValue = false,
-    Flag = "AutoUpgradeToggle",
-    Callback = function(value)
-        autoUpgradeEnabled = value
-        upgradeStatusLabel:Set("Auto Upgrade: " .. (value and "Enabled" or "Disabled"))
-        if value then
-            if upgradeThread and coroutine.status(upgradeThread) ~= "dead" then return end
-            upgradeThread = task.spawn(function()
-                while autoUpgradeEnabled do
-                    pcall(function()
-                        tycoonInstance
-                            :WaitForChild("Purchases")
-                            :WaitForChild("LemonDash")
-                            :WaitForChild("LemonDash")
-                            :WaitForChild("LemonDash")
-                            :WaitForChild("Upgrade")
-                            :InvokeServer(1)
-                    end)
-                    task.wait(0.5)
-                end
-            end)
-        end
-    end,
+	Name = "Enable Auto Upgrade",
+	CurrentValue = false,
+	Flag = "AutoUpgradeToggle",
+	Callback = function(value)
+		autoUpgradeEnabled = value
+		upgradeStatusLabel:Set("Auto Upgrade: " .. (value and "Enabled" or "Disabled"))
+		if value then
+			if upgradeThread and coroutine.status(upgradeThread) ~= "dead" then return end
+			upgradeThread = task.spawn(function()
+				while autoUpgradeEnabled do
+					pcall(function()
+						tycoonInstance
+							:WaitForChild("Purchases")
+							:WaitForChild("LemonDash")
+							:WaitForChild("LemonDash")
+							:WaitForChild("LemonDash")
+							:WaitForChild("Upgrade")
+							:InvokeServer(1)
+					end)
+					task.wait(0.5)
+				end
+			end)
+		end
+	end,
 })
 
 GameTab:CreateSection("Auto Phone Offers")
@@ -267,106 +337,108 @@ local offerConnection = nil
 local offerDebounce = false
 
 local function handleOffer()
-    if offerDebounce then return end
-    offerDebounce = true
-
-    local raiseTimes = 0
-    if offerMode == "Raise x1" then raiseTimes = 1
-    elseif offerMode == "Raise x2" then raiseTimes = 2
-    elseif offerMode == "Raise x3" then raiseTimes = 3
-    end
-
-    for _ = 1, raiseTimes do
-        phoneOfferRemote:FireServer("Raise")
-        task.wait(2)
-    end
-
-    phoneOfferRemote:FireServer("Accept")
-    Rayfield:Notify({
-        Title = "Phone Offer",
-        Content = "Accepted" .. (raiseTimes > 0 and " after " .. raiseTimes .. " raise(s)" or ""),
-        Duration = 2
-    })
-
-    task.wait(5)
-    offerDebounce = false
+	if offerDebounce or not phoneOfferRemote then return end
+	offerDebounce = true
+	local raiseTimes = 0
+	if offerMode == "Raise x1" then raiseTimes = 1
+	elseif offerMode == "Raise x2" then raiseTimes = 2
+	elseif offerMode == "Raise x3" then raiseTimes = 3
+	end
+	for _ = 1, raiseTimes do
+		pcall(function() phoneOfferRemote:FireServer("Raise") end)
+		task.wait(2)
+	end
+	pcall(function() phoneOfferRemote:FireServer("Accept") end)
+	Rayfield:Notify({
+		Title = "Phone Offer",
+		Content = "Accepted" .. (raiseTimes > 0 and " after " .. raiseTimes .. " raise(s)" or ""),
+		Duration = 2
+	})
+	task.wait(5)
+	offerDebounce = false
 end
 
 local offerStatusLabel = GameTab:CreateLabel("Auto Offer: Disabled | Mode: Accept Any")
 
 GameTab:CreateDropdown({
-    Name = "Offer Mode",
-    Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
-    CurrentOption = { "Accept Any" },
-    Flag = "GameTabOfferModeDropdown",
-    Callback = function(selected)
-        offerMode = selected[1] or "Accept Any"
-        offerStatusLabel:Set("Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
-    end,
+	Name = "Offer Mode",
+	Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
+	CurrentOption = { "Accept Any" },
+	Flag = "GameTabOfferModeDropdown",
+	Callback = function(selected)
+		offerMode = selected[1] or "Accept Any"
+		offerStatusLabel:Set("Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
+	end,
 })
 
 GameTab:CreateToggle({
-    Name = "Enable Auto Offer",
-    CurrentValue = false,
-    Flag = "AutoOfferToggle",
-    Callback = function(value)
-        autoOfferEnabled = value
-        offerStatusLabel:Set("Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
-        if value then
-            if offerConnection then offerConnection:Disconnect() end
-            offerConnection = phoneOfferRemote.OnClientEvent:Connect(function(v)
-                if autoOfferEnabled and type(v) == "number" then
-                    task.spawn(handleOffer)
-                end
-            end)
-        else
-            if offerConnection then offerConnection:Disconnect() offerConnection = nil end
-        end
-    end,
+	Name = "Enable Auto Offer",
+	CurrentValue = false,
+	Flag = "AutoOfferToggle",
+	Callback = function(value)
+		autoOfferEnabled = value
+		offerStatusLabel:Set("Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
+		if value then
+			if phoneOfferRemote then
+				if offerConnection then pcall(function() offerConnection:Disconnect() end) end
+				offerConnection = phoneOfferRemote.OnClientEvent:Connect(function(v)
+					if autoOfferEnabled and type(v) == "number" then
+						task.spawn(handleOffer)
+					end
+				end)
+			end
+		else
+			if offerConnection then
+				pcall(function() offerConnection:Disconnect() end)
+				offerConnection = nil
+			end
+		end
+	end,
 })
-
-local treesFolder = workspace.Tycoon1.Constant.Trees
-local treeList = treesFolder:GetChildren()
 
 local sessionLemonsCollected = 0
 local sessionFireTouchFired = 0
 
 local function getFruits(tree)
-    local fruits = {}
-    for _, child in ipairs(tree:GetChildren()) do
-        if child.Name == "Fruit" then table.insert(fruits, child) end
-    end
-    return fruits
+	local fruits = {}
+	for _, child in ipairs(tree:GetChildren()) do
+		if child.Name == "Fruit" then table.insert(fruits, child) end
+	end
+	return fruits
 end
 
 local function teleportToTree(tree)
-    local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
-    if part then
-        hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0)
-        task.wait(0.05)
-    end
+	pcall(function()
+		local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
+		if part then
+			hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+			task.wait(0.05)
+		end
+	end)
 end
 
 local function collectFruit(fruit)
-    local clickDetector = fruit:FindFirstChildWhichIsA("ClickDetector", true)
-    if clickDetector then
-        fireclickdetector(clickDetector)
-        sessionLemonsCollected = sessionLemonsCollected + 1
-        return
-    end
-    local prompt = fruit:FindFirstChildWhichIsA("ProximityPrompt", true)
-    if prompt then
-        fireproximityprompt(prompt)
-        sessionLemonsCollected = sessionLemonsCollected + 1
-        return
-    end
-    local part = fruit:IsA("BasePart") and fruit or fruit:FindFirstChildWhichIsA("BasePart")
-    if part then
-        firetouchinterest(hrp, part, 0)
-        firetouchinterest(hrp, part, 1)
-        sessionFireTouchFired = sessionFireTouchFired + 1
-        sessionLemonsCollected = sessionLemonsCollected + 1
-    end
+	local clickDetector = fruit:FindFirstChildWhichIsA("ClickDetector", true)
+	if clickDetector then
+		pcall(function() fireclickdetector(clickDetector) end)
+		sessionLemonsCollected = sessionLemonsCollected + 1
+		return
+	end
+	local prompt = fruit:FindFirstChildWhichIsA("ProximityPrompt", true)
+	if prompt then
+		pcall(function() fireproximityprompt(prompt) end)
+		sessionLemonsCollected = sessionLemonsCollected + 1
+		return
+	end
+	local part = fruit:IsA("BasePart") and fruit or fruit:FindFirstChildWhichIsA("BasePart")
+	if part then
+		pcall(function()
+			firetouchinterest(hrp, part, 0)
+			firetouchinterest(hrp, part, 1)
+		end)
+		sessionFireTouchFired = sessionFireTouchFired + 1
+		sessionLemonsCollected = sessionLemonsCollected + 1
+	end
 end
 
 local autoLemonEnabled = false
@@ -380,46 +452,46 @@ FarmingTab:CreateSection("Lemon Farming")
 local farmStatusLabel = FarmingTab:CreateLabel("Lemon Farming: Disabled | Collected: 0 | Touch: 0")
 
 FarmingTab:CreateToggle({
-    Name = "Auto Collect Lemons",
-    CurrentValue = false,
-    Flag = "AutoLemonToggle",
-    Callback = function(value)
-        autoLemonEnabled = value
-        farmStatusLabel:Set("Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
-        if value then
-            if lemonThread and coroutine.status(lemonThread) ~= "dead" then return end
-            lemonThread = task.spawn(function()
-                while autoLemonEnabled do
-                    local anyFruits = false
-                    for _, tree in ipairs(treeList) do
-                        local fruits = getFruits(tree)
-                        if #fruits > 0 then
-                            anyFruits = true
-                            teleportToTree(tree)
-                            for _, fruit in ipairs(fruits) do collectFruit(fruit) end
-                            task.wait(0.05)
-                        end
-                    end
-                    if not anyFruits then task.wait(0.5) end
-                    farmStatusLabel:Set("Lemon Farming: " .. (autoLemonEnabled and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
-                end
-            end)
-        end
-    end,
+	Name = "Auto Collect Lemons",
+	CurrentValue = false,
+	Flag = "AutoLemonToggle",
+	Callback = function(value)
+		autoLemonEnabled = value
+		farmStatusLabel:Set("Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
+		if value then
+			if lemonThread and coroutine.status(lemonThread) ~= "dead" then return end
+			lemonThread = task.spawn(function()
+				while autoLemonEnabled do
+					local anyFruits = false
+					for _, tree in ipairs(treeList) do
+						local fruits = getFruits(tree)
+						if #fruits > 0 then
+							anyFruits = true
+							teleportToTree(tree)
+							for _, fruit in ipairs(fruits) do collectFruit(fruit) end
+							task.wait(0.05)
+						end
+					end
+					if not anyFruits then task.wait(0.5) end
+					farmStatusLabel:Set("Lemon Farming: " .. (autoLemonEnabled and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
+				end
+			end)
+		end
+	end,
 })
 
 FarmingTab:CreateButton({
-    Name = "Teleport to Nearest Fruit",
-    Callback = function()
-        for _, tree in ipairs(treeList) do
-            if #getFruits(tree) > 0 then
-                teleportToTree(tree)
-                Rayfield:Notify({ Title = "Teleported", Content = "Moved to " .. tree.Name, Duration = 1.5 })
-                return
-            end
-        end
-        Rayfield:Notify({ Title = "No Fruits", Content = "No fruits found.", Duration = 2 })
-    end,
+	Name = "Teleport to Nearest Fruit",
+	Callback = function()
+		for _, tree in ipairs(treeList) do
+			if #getFruits(tree) > 0 then
+				teleportToTree(tree)
+				Rayfield:Notify({ Title = "Teleported", Content = "Moved to " .. tree.Name, Duration = 1.5 })
+				return
+			end
+		end
+		Rayfield:Notify({ Title = "No Fruits", Content = "No fruits found.", Duration = 2 })
+	end,
 })
 
 FarmingTab:CreateSection("Cash Drops")
@@ -427,28 +499,35 @@ FarmingTab:CreateSection("Cash Drops")
 local cashDropLabel = FarmingTab:CreateLabel("Cash Drop: Disabled | Total: 0")
 
 FarmingTab:CreateToggle({
-    Name = "Auto Collect Cash Drops",
-    CurrentValue = false,
-    Flag = "CashDropToggle",
-    Callback = function(value)
-        autoCashDropEnabled = value
-        cashDropLabel:Set("Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
-        if value then
-            if cashDropConnection then cashDropConnection:Disconnect() end
-            cashDropConnection = newDropRemote.OnClientEvent:Connect(function(dropId)
-                if autoCashDropEnabled then
-                    task.spawn(function()
-                        local result = redeemRemote:InvokeServer(dropId)
-                        sessionCashDrops = sessionCashDrops + 1
-                        cashDropLabel:Set("Cash Drop: " .. (autoCashDropEnabled and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
-                        Rayfield:Notify({ Title = "Cash Collected", Content = "$" .. tostring(result), Duration = 1.5 })
-                    end)
-                end
-            end)
-        else
-            if cashDropConnection then cashDropConnection:Disconnect() cashDropConnection = nil end
-        end
-    end,
+	Name = "Auto Collect Cash Drops",
+	CurrentValue = false,
+	Flag = "CashDropToggle",
+	Callback = function(value)
+		autoCashDropEnabled = value
+		cashDropLabel:Set("Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
+		if value then
+			if newDropRemote then
+				if cashDropConnection then pcall(function() cashDropConnection:Disconnect() end) end
+				cashDropConnection = newDropRemote.OnClientEvent:Connect(function(dropId)
+					if autoCashDropEnabled and redeemRemote then
+						task.spawn(function()
+							local ok, result = pcall(function() return redeemRemote:InvokeServer(dropId) end)
+							sessionCashDrops = sessionCashDrops + 1
+							cashDropLabel:Set("Cash Drop: " .. (autoCashDropEnabled and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
+							if ok then
+								Rayfield:Notify({ Title = "Cash Collected", Content = "$" .. tostring(result), Duration = 1.5 })
+							end
+						end)
+					end
+				end)
+			end
+		else
+			if cashDropConnection then
+				pcall(function() cashDropConnection:Disconnect() end)
+				cashDropConnection = nil
+			end
+		end
+	end,
 })
 
 FarmingTab:CreateSection("Auto Wake Income")
@@ -458,47 +537,56 @@ local wakeTracked = {}
 local wakeSelectedStreams = {}
 
 local function getManualStreamNames()
-    local names = {}
-    for _, entry in streams:GetChildren() do
-        if not entry:GetAttribute("Automatic") then
-            table.insert(names, entry.Name)
-        end
-    end
-    table.sort(names)
-    return names
+	local names = {}
+	if not streams then return names end
+	pcall(function()
+		for _, entry in streams:GetChildren() do
+			if not entry:GetAttribute("Automatic") then
+				table.insert(names, entry.Name)
+			end
+		end
+	end)
+	table.sort(names)
+	return names
 end
 
 local function shouldWake(name)
-    if next(wakeSelectedStreams) == nil then return true end
-    return wakeSelectedStreams[name] == true
+	if next(wakeSelectedStreams) == nil then return true end
+	return wakeSelectedStreams[name] == true
 end
 
 local function startWakeLoop(entry)
-    task.spawn(function()
-        while autoWakeEnabled do
-            if not entry:GetAttribute("Automatic") and shouldWake(entry.Name) then
-                pcall(function() wakeRemote:InvokeServer(entry.Name) end)
-            end
-            local interval = entry:GetAttribute("Interval") or 1
-            task.wait(interval)
-        end
-    end)
+	task.spawn(function()
+		while autoWakeEnabled do
+			pcall(function()
+				if not entry:GetAttribute("Automatic") and shouldWake(entry.Name) and wakeRemote then
+					wakeRemote:InvokeServer(entry.Name)
+				end
+			end)
+			local interval = 1
+			pcall(function() interval = entry:GetAttribute("Interval") or 1 end)
+			task.wait(interval)
+		end
+	end)
 end
 
 local function startAllWakeLoops()
-    wakeTracked = {}
-    for _, entry in streams:GetChildren() do
-        if not wakeTracked[entry.Name] then
-            wakeTracked[entry.Name] = true
-            startWakeLoop(entry)
-        end
-    end
-    streams.ChildAdded:Connect(function(entry)
-        if autoWakeEnabled and not wakeTracked[entry.Name] then
-            wakeTracked[entry.Name] = true
-            startWakeLoop(entry)
-        end
-    end)
+	if not streams then return end
+	wakeTracked = {}
+	pcall(function()
+		for _, entry in streams:GetChildren() do
+			if not wakeTracked[entry.Name] then
+				wakeTracked[entry.Name] = true
+				startWakeLoop(entry)
+			end
+		end
+		streams.ChildAdded:Connect(function(entry)
+			if autoWakeEnabled and not wakeTracked[entry.Name] then
+				wakeTracked[entry.Name] = true
+				startWakeLoop(entry)
+			end
+		end)
+	end)
 end
 
 local wakeStatusLabel = FarmingTab:CreateLabel("Auto Wake: Disabled")
@@ -508,39 +596,39 @@ local streamDropdownOptions = { "All" }
 for _, n in ipairs(manualStreamNames) do table.insert(streamDropdownOptions, n) end
 
 FarmingTab:CreateDropdown({
-    Name = "Income to Wake",
-    Options = streamDropdownOptions,
-    CurrentOption = { "All" },
-    Flag = "FarmingWakeStreamDropdown",
-    Callback = function(selected)
-        wakeSelectedStreams = {}
-        local hasAll = false
-        for _, v in ipairs(selected) do
-            if v == "All" then hasAll = true break end
-        end
-        if not hasAll then
-            for _, v in ipairs(selected) do
-                wakeSelectedStreams[v] = true
-            end
-        end
-    end,
+	Name = "Income to Wake",
+	Options = streamDropdownOptions,
+	CurrentOption = { "All" },
+	Flag = "FarmingWakeStreamDropdown",
+	Callback = function(selected)
+		wakeSelectedStreams = {}
+		local hasAll = false
+		for _, v in ipairs(selected) do
+			if v == "All" then hasAll = true break end
+		end
+		if not hasAll then
+			for _, v in ipairs(selected) do
+				wakeSelectedStreams[v] = true
+			end
+		end
+	end,
 })
 
 FarmingTab:CreateToggle({
-    Name = "Enable Auto Wake",
-    CurrentValue = false,
-    Flag = "AutoWakeToggle",
-    Callback = function(value)
-        autoWakeEnabled = value
-        wakeStatusLabel:Set("Auto Wake: " .. (value and "Enabled" or "Disabled"))
-        if value then
-            startAllWakeLoops()
-        end
-    end,
+	Name = "Enable Auto Wake",
+	CurrentValue = false,
+	Flag = "AutoWakeToggle",
+	Callback = function(value)
+		autoWakeEnabled = value
+		wakeStatusLabel:Set("Auto Wake: " .. (value and "Enabled" or "Disabled"))
+		if value then
+			startAllWakeLoops()
+		end
+	end,
 })
 
-local minigameStartRemote = RS:WaitForChild("Core"):WaitForChild("RemoteRequest"):WaitForChild("MinigameRaceService.Start")
-local minigameEndRemote = RS:WaitForChild("Core"):WaitForChild("RemoteRequest"):WaitForChild("MinigameRaceService.End")
+local minigameStartRemote = coreRemoteRequest and safeWait(coreRemoteRequest, "MinigameRaceService.Start", 10) or nil
+local minigameEndRemote = coreRemoteRequest and safeWait(coreRemoteRequest, "MinigameRaceService.End", 10) or nil
 
 local autoMinigameEnabled = false
 local minigameThread = nil
@@ -548,162 +636,169 @@ local minigamesWon = 0
 local timesCheered = 0
 
 local function getRaceAvailableTime()
-    local playerValues = player:FindFirstChild("Values")
-    if not playerValues then return 0 end
-    local minigameRaceAvailable = playerValues:FindFirstChild("MinigameRaceAvailable")
-    if not minigameRaceAvailable then return 0 end
-    return math.max(0, minigameRaceAvailable.Value - workspace:GetServerTimeNow())
+	local result = 0
+	pcall(function()
+		local playerValues = player:FindFirstChild("Values")
+		if not playerValues then return end
+		local minigameRaceAvailable = playerValues:FindFirstChild("MinigameRaceAvailable")
+		if not minigameRaceAvailable then return end
+		result = math.max(0, minigameRaceAvailable.Value - workspace:GetServerTimeNow())
+	end)
+	return result
 end
 
 local function getCheerInterval()
-    local tycoonValues = tycoonInstance:FindFirstChild("Values")
-    if not tycoonValues then return 2 end
-    local minigameCheer = tycoonValues:FindFirstChild("MinigameCheerInterval")
-    if not minigameCheer then return 2 end
-    return minigameCheer.Value or 2
+	local result = 2
+	pcall(function()
+		local tycoonValues = tycoonInstance and tycoonInstance:FindFirstChild("Values")
+		if not tycoonValues then return end
+		local minigameCheer = tycoonValues:FindFirstChild("MinigameCheerInterval")
+		if not minigameCheer then return end
+		result = minigameCheer.Value or 2
+	end)
+	return result
 end
 
 local function startRace()
-    local success, raceData = pcall(function()
-        return minigameStartRemote:InvokeServer()
-    end)
-    if success and raceData then
-        return raceData
-    end
-    return nil
+	if not minigameStartRemote then return nil end
+	local ok, result = pcall(function() return minigameStartRemote:InvokeServer() end)
+	return ok and result or nil
 end
 
 local function selectBall()
-    pcall(function()
-        local raceSetup = workspace:FindFirstChild("RaceSetup")
-        if raceSetup then
-            local balls = {}
-            for _, child in ipairs(raceSetup:GetChildren()) do
-                local prompt = child:FindFirstChildWhichIsA("ProximityPrompt", true)
-                if prompt then
-                    table.insert(balls, prompt)
-                end
-            end
-            if #balls > 0 then
-                local randomPrompt = balls[math.random(1, #balls)]
-                fireproximityprompt(randomPrompt)
-            end
-        end
-    end)
+	pcall(function()
+		local raceSetup = workspace:FindFirstChild("RaceSetup")
+		if raceSetup then
+			local balls = {}
+			for _, child in ipairs(raceSetup:GetChildren()) do
+				local prompt = child:FindFirstChildWhichIsA("ProximityPrompt", true)
+				if prompt then table.insert(balls, prompt) end
+			end
+			if #balls > 0 then
+				fireproximityprompt(balls[math.random(1, #balls)])
+			end
+		end
+	end)
 end
 
 local function cheerOnce()
-    local UIS = game:GetService("UserInputService")
-    pcall(function()
-        UIS:SendKeyEvent(true, Enum.KeyCode.E, false)
-        task.wait(0.05)
-        UIS:SendKeyEvent(false, Enum.KeyCode.E, false)
-        timesCheered = timesCheered + 1
-    end)
+	pcall(function()
+		local UIS = game:GetService("UserInputService")
+		UIS:SendKeyEvent(true, Enum.KeyCode.E, false)
+		task.wait(0.05)
+		UIS:SendKeyEvent(false, Enum.KeyCode.E, false)
+		timesCheered = timesCheered + 1
+	end)
 end
 
 local function endRace()
-    local success, cashEarned = pcall(function()
-        return minigameEndRemote:InvokeServer()
-    end)
-    if success and cashEarned and cashEarned > 0 then
-        minigamesWon = minigamesWon + 1
-        return cashEarned
-    end
-    return 0
+	if not minigameEndRemote then return 0 end
+	local ok, result = pcall(function() return minigameEndRemote:InvokeServer() end)
+	if ok and result and result > 0 then
+		minigamesWon = minigamesWon + 1
+		return result
+	end
+	return 0
 end
 
 local function getRaceEndTime()
-    local raceSetup = workspace:FindFirstChild("RaceSetup")
-    if not raceSetup then return 45 end
-    local raceTimer = raceSetup:FindFirstChild("Timer")
-    if not raceTimer then return 45 end
-    return math.max(0, raceTimer.Value or 45)
+	local result = 45
+	pcall(function()
+		local raceSetup = workspace:FindFirstChild("RaceSetup")
+		if not raceSetup then return end
+		local raceTimer = raceSetup:FindFirstChild("Timer")
+		if not raceTimer then return end
+		result = math.max(0, raceTimer.Value or 45)
+	end)
+	return result
 end
 
 local function minigameLoop()
-    minigameThread = task.spawn(function()
-        while autoMinigameEnabled do
-            local availableTime = getRaceAvailableTime()
-            if availableTime <= 0 then
-                local raceData = startRace()
-                if raceData then
-                    task.wait(0.5)
-                    selectBall()
-                    task.wait(0.5)
-                    local cheerInterval = getCheerInterval()
-                    local raceEndTime = getRaceEndTime()
-                    local raceStartTick = tick()
-                    while autoMinigameEnabled and (tick() - raceStartTick) < raceEndTime do
-                        cheerOnce()
-                        task.wait(cheerInterval)
-                    end
-                    task.wait(0.5)
-                    local earned = endRace()
-                    if earned > 0 then
-                        Rayfield:Notify({ Title = "Race Won", Content = "Earned: $" .. earned, Duration = 1.5 })
-                    end
-                    while autoMinigameEnabled and getRaceAvailableTime() > 0 do
-                        task.wait(0.5)
-                    end
-                else
-                    task.wait(1)
-                end
-            else
-                task.wait(0.5)
-            end
-        end
-    end)
+	minigameThread = task.spawn(function()
+		while autoMinigameEnabled do
+			local availableTime = getRaceAvailableTime()
+			if availableTime <= 0 then
+				local raceData = startRace()
+				if raceData then
+					task.wait(0.5)
+					selectBall()
+					task.wait(0.5)
+					local cheerInterval = getCheerInterval()
+					local raceEndTime = getRaceEndTime()
+					local raceStartTick = tick()
+					while autoMinigameEnabled and (tick() - raceStartTick) < raceEndTime do
+						cheerOnce()
+						task.wait(cheerInterval)
+					end
+					task.wait(0.5)
+					local earned = endRace()
+					if earned > 0 then
+						Rayfield:Notify({ Title = "Race Won", Content = "Earned: $" .. earned, Duration = 1.5 })
+					end
+					while autoMinigameEnabled and getRaceAvailableTime() > 0 do
+						task.wait(0.5)
+					end
+				else
+					task.wait(1)
+				end
+			else
+				task.wait(0.5)
+			end
+		end
+	end)
 end
 
 MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
-
 MinigameTab:CreateSection("Lemon Dash")
 
 local minigameStatusLabel = MinigameTab:CreateLabel("Status: Disabled | Won: 0 | Cheered: 0")
 
 MinigameTab:CreateToggle({
-    Name = "Auto Win Races",
-    CurrentValue = false,
-    Flag = "AutoMinigameToggle",
-    Callback = function(value)
-        autoMinigameEnabled = value
-        if value then
-            minigameLoop()
-            Rayfield:Notify({ Title = "Auto Win", Content = "Lemon Dash auto win enabled!", Duration = 2 })
-        else
-            if minigameThread then
-                task.cancel(minigameThread)
-                minigameThread = nil
-            end
-        end
-    end,
+	Name = "Auto Win Races",
+	CurrentValue = false,
+	Flag = "AutoMinigameToggle",
+	Callback = function(value)
+		autoMinigameEnabled = value
+		if value then
+			minigameLoop()
+			Rayfield:Notify({ Title = "Auto Win", Content = "Lemon Dash auto win enabled!", Duration = 2 })
+		else
+			if minigameThread then
+				pcall(function() task.cancel(minigameThread) end)
+				minigameThread = nil
+			end
+		end
+	end,
 })
 
 MinigameTab:CreateSection("Other Minigames")
 
 MinigameTab:CreateButton({
-    Name = "Coming Soon...",
-    Callback = function()
-        Rayfield:Notify({ Title = "Coming Soon", Content = "Other minigames will be added soon", Duration = 2 })
-    end,
+	Name = "Coming Soon...",
+	Callback = function()
+		Rayfield:Notify({ Title = "Coming Soon", Content = "Other minigames will be added soon", Duration = 2 })
+	end,
 })
 
 RunService.Heartbeat:Connect(function()
-    if autoMinigameEnabled then
-        local availableTime = getRaceAvailableTime()
-        local statusStr
-        if availableTime > 0 then
-            local mins = math.floor(availableTime / 60)
-            local secs = math.floor(availableTime % 60)
-            statusStr = string.format("Status: Waiting %d:%02d | Won: %d | Cheered: %d", mins, secs, minigamesWon, timesCheered)
-        else
-            statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
-        end
-        minigameStatusLabel:Set(statusStr)
-    else
-        minigameStatusLabel:Set(string.format("Status: Disabled | Won: %d | Cheered: %d", minigamesWon, timesCheered))
-    end
+	if autoMinigameEnabled then
+		pcall(function()
+			local availableTime = getRaceAvailableTime()
+			local statusStr
+			if availableTime > 0 then
+				local mins = math.floor(availableTime / 60)
+				local secs = math.floor(availableTime % 60)
+				statusStr = string.format("Status: Waiting %d:%02d | Won: %d | Cheered: %d", mins, secs, minigamesWon, timesCheered)
+			else
+				statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
+			end
+			minigameStatusLabel:Set(statusStr)
+		end)
+	else
+		pcall(function()
+			minigameStatusLabel:Set(string.format("Status: Disabled | Won: %d | Cheered: %d", minigamesWon, timesCheered))
+		end)
+	end
 end)
 
 MiscTab:CreateSection("Settings - Movement")
@@ -712,152 +807,152 @@ local walkspeedEnabled = false
 local currentWalkspeed = 16
 
 MiscTab:CreateSlider({
-    Name = "Walkspeed",
-    Range = {16, 200},
-    Increment = 1,
-    Suffix = "",
-    CurrentValue = 16,
-    Flag = "MiscWalkspeedSlider",
-    Callback = function(value)
-        currentWalkspeed = value
-        if walkspeedEnabled then
-            humanoid.WalkSpeed = value
-        end
-    end,
+	Name = "Walkspeed",
+	Range = {16, 200},
+	Increment = 1,
+	Suffix = "",
+	CurrentValue = 16,
+	Flag = "MiscWalkspeedSlider",
+	Callback = function(value)
+		currentWalkspeed = value
+		if walkspeedEnabled then
+			pcall(function() humanoid.WalkSpeed = value end)
+		end
+	end,
 })
 
 MiscTab:CreateToggle({
-    Name = "Enable Fast Speed",
-    CurrentValue = false,
-    Flag = "MiscFastSpeedToggle",
-    Callback = function(value)
-        walkspeedEnabled = value
-        if value then
-            humanoid.WalkSpeed = currentWalkspeed
-            Rayfield:Notify({ Title = "Enabled", Content = "Fast speed enabled at " .. currentWalkspeed .. " speed", Duration = 1.5 })
-        else
-            humanoid.WalkSpeed = 16
-            Rayfield:Notify({ Title = "Disabled", Content = "Fast speed disabled", Duration = 1.5 })
-        end
-    end,
+	Name = "Enable Fast Speed",
+	CurrentValue = false,
+	Flag = "MiscFastSpeedToggle",
+	Callback = function(value)
+		walkspeedEnabled = value
+		if value then
+			pcall(function() humanoid.WalkSpeed = currentWalkspeed end)
+			Rayfield:Notify({ Title = "Enabled", Content = "Fast speed enabled at " .. currentWalkspeed .. " speed", Duration = 1.5 })
+		else
+			pcall(function() humanoid.WalkSpeed = 16 end)
+			Rayfield:Notify({ Title = "Disabled", Content = "Fast speed disabled", Duration = 1.5 })
+		end
+	end,
 })
 
 MiscTab:CreateSection("Settings - Graphics")
 
 MiscTab:CreateToggle({
-    Name = "Save GPU",
-    CurrentValue = false,
-    Flag = "MiscSaveGpuToggle",
-    Callback = function(value)
-        RunService:Set3dRenderingEnabled(not value)
-    end,
+	Name = "Save GPU",
+	CurrentValue = false,
+	Flag = "MiscSaveGpuToggle",
+	Callback = function(value)
+		pcall(function() RunService:Set3dRenderingEnabled(not value) end)
+	end,
 })
 
 MiscTab:CreateToggle({
-    Name = "Hide Lemon Trees",
-    CurrentValue = false,
-    Flag = "MiscHideLemonTreesToggle",
-    Callback = function(value)
-        for _, tree in ipairs(treeList) do
-            for _, part in ipairs(tree:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.LocalTransparencyModifier = value and 1 or 0
-                end
-            end
-        end
-        Rayfield:Notify({ Title = "Success", Content = "Lemon trees are now " .. (value and "hidden" or "visible"), Duration = 1.5 })
-    end,
+	Name = "Hide Lemon Trees",
+	CurrentValue = false,
+	Flag = "MiscHideLemonTreesToggle",
+	Callback = function(value)
+		pcall(function()
+			for _, tree in ipairs(treeList) do
+				for _, part in ipairs(tree:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.LocalTransparencyModifier = value and 1 or 0
+					end
+				end
+			end
+		end)
+		Rayfield:Notify({ Title = "Success", Content = "Lemon trees are now " .. (value and "hidden" or "visible"), Duration = 1.5 })
+	end,
 })
 
 MiscTab:CreateSection("Settings - Workspace")
 
 local function getTycoonList()
-    local tycoons = {}
-    for _, v in ipairs(workspace:GetChildren()) do
-        if v.Name:match("^Tycoon%d+") then
-            table.insert(tycoons, v.Name)
-        end
-    end
-    table.sort(tycoons)
-    return tycoons
+	local tycoons = {}
+	pcall(function()
+		for _, v in ipairs(workspace:GetChildren()) do
+			if v.Name:match("^Tycoon%d+") then
+				table.insert(tycoons, v.Name)
+			end
+		end
+	end)
+	table.sort(tycoons)
+	return tycoons
 end
 
 local tycoonOptions = { "All But Ours", "All", "Our Tycoon" }
 local tycoonListData = getTycoonList()
 for _, tycoonName in ipairs(tycoonListData) do
-    local found = false
-    for _, opt in ipairs(tycoonOptions) do
-        if opt == tycoonName then found = true break end
-    end
-    if not found then
-        table.insert(tycoonOptions, tycoonName)
-    end
+	local found = false
+	for _, opt in ipairs(tycoonOptions) do
+		if opt == tycoonName then found = true break end
+	end
+	if not found then table.insert(tycoonOptions, tycoonName) end
 end
 
 MiscTab:CreateDropdown({
-    Name = "Tycoon Target",
-    Options = tycoonOptions,
-    CurrentOption = { "All But Ours" },
-    Flag = "MiscTycoonTargetDropdown",
-    Callback = function(selected)
-    end,
+	Name = "Tycoon Target",
+	Options = tycoonOptions,
+	CurrentOption = { "All But Ours" },
+	Flag = "MiscTycoonTargetDropdown",
+	Callback = function() end,
 })
 
 MiscTab:CreateButton({
-    Name = "Destroy Tycoons",
-    Callback = function()
-        local flagVal = Window.Flags["MiscTycoonTargetDropdown"]
-        local target = "All But Ours"
-        if type(flagVal) == "table" then
-            target = flagVal[1] or "All But Ours"
-        elseif type(flagVal) == "string" then
-            target = flagVal
-        end
-
-        if target == "Our Tycoon" then
-            tycoonInstance:Destroy()
-            Rayfield:Notify({ Title = "Destroyed", Content = "Your tycoon has been destroyed", Duration = 2 })
-        elseif target == "All" then
-            for _, v in ipairs(workspace:GetChildren()) do
-                if v.Name:match("^Tycoon%d+") then
-                    v:Destroy()
-                end
-            end
-            Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons have been destroyed", Duration = 2 })
-        elseif target == "All But Ours" then
-            for _, v in ipairs(workspace:GetChildren()) do
-                if v.Name:match("^Tycoon%d+") and v ~= tycoonInstance then
-                    v:Destroy()
-                end
-            end
-            Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons except yours have been destroyed", Duration = 2 })
-        else
-            for _, v in ipairs(workspace:GetChildren()) do
-                if v.Name == target then
-                    v:Destroy()
-                    Rayfield:Notify({ Title = "Destroyed", Content = target .. " has been destroyed", Duration = 2 })
-                    return
-                end
-            end
-        end
-    end,
+	Name = "Destroy Tycoons",
+	Callback = function()
+		local flagVal = Window.Flags["MiscTycoonTargetDropdown"]
+		local target = "All But Ours"
+		if type(flagVal) == "table" then
+			target = flagVal[1] or "All But Ours"
+		elseif type(flagVal) == "string" then
+			target = flagVal
+		end
+		pcall(function()
+			if target == "Our Tycoon" then
+				tycoonInstance:Destroy()
+				Rayfield:Notify({ Title = "Destroyed", Content = "Your tycoon has been destroyed", Duration = 2 })
+			elseif target == "All" then
+				for _, v in ipairs(workspace:GetChildren()) do
+					if v.Name:match("^Tycoon%d+") then v:Destroy() end
+				end
+				Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons have been destroyed", Duration = 2 })
+			elseif target == "All But Ours" then
+				for _, v in ipairs(workspace:GetChildren()) do
+					if v.Name:match("^Tycoon%d+") and v ~= tycoonInstance then v:Destroy() end
+				end
+				Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons except yours have been destroyed", Duration = 2 })
+			else
+				for _, v in ipairs(workspace:GetChildren()) do
+					if v.Name == target then
+						v:Destroy()
+						Rayfield:Notify({ Title = "Destroyed", Content = target .. " has been destroyed", Duration = 2 })
+						return
+					end
+				end
+			end
+		end)
+	end,
 })
 
 MiscTab:CreateButton({
-    Name = "Destroy NPCs",
-    Callback = function()
-        local npcsFolder = workspace:FindFirstChild("NPCs")
-        if npcsFolder then
-            npcsFolder:Destroy()
-            Rayfield:Notify({ Title = "Destroyed", Content = "All NPCs have been destroyed", Duration = 2 })
-        else
-            Rayfield:Notify({ Title = "Not Found", Content = "NPCs folder not found", Duration = 2 })
-        end
-    end,
+	Name = "Destroy NPCs",
+	Callback = function()
+		pcall(function()
+			local npcsFolder = workspace:FindFirstChild("NPCs")
+			if npcsFolder then
+				npcsFolder:Destroy()
+				Rayfield:Notify({ Title = "Destroyed", Content = "All NPCs have been destroyed", Duration = 2 })
+			else
+				Rayfield:Notify({ Title = "Not Found", Content = "NPCs folder not found", Duration = 2 })
+			end
+		end)
+	end,
 })
 
 Rayfield:Notify({
-    Title = "Cactus Hub",
-    Content = "Loaded | discord.gg/cactushub",
-    Duration = 3,
+	Title = "Cactus Hub",
+	Content = "Loaded | discord.gg/cactushub",
+	Duration = 3,
 })
