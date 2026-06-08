@@ -251,7 +251,8 @@ local upgradeThread = nil
 
 GameTab:CreateSection("Auto Buy")
 
-local totalBought, totalItems = getPurchaseStats()
+local totalBought, totalItems = 0, 0
+pcall(function() totalBought, totalItems = getPurchaseStats() end)
 local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
 
 GameTab:CreateDropdown({
@@ -261,8 +262,9 @@ GameTab:CreateDropdown({
 	Flag = "CategoryDropdown",
 	Callback = function(selected)
 		currentCategory = selected[1] or "All"
-		local bought, total = getPurchaseStats()
-		buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+		local bought, total = 0, 0
+		pcall(function() bought, total = getPurchaseStats() end)
+		pcall(function() buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total) end)
 	end,
 })
 
@@ -272,8 +274,9 @@ GameTab:CreateToggle({
 	Flag = "AutoBuyToggle",
 	Callback = function(value)
 		autoBuyEnabled = value
-		local bought, total = getPurchaseStats()
-		buyStatusLabel:Set("Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+		local bought, total = 0, 0
+		pcall(function() bought, total = getPurchaseStats() end)
+		pcall(function() buyStatusLabel:Set("Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total) end)
 		if value then
 			if buyThread and coroutine.status(buyThread) ~= "dead" then return end
 			buyThread = task.spawn(function()
@@ -284,8 +287,9 @@ GameTab:CreateToggle({
 						Rayfield:Notify({ Title = "Bought", Content = affordable[1].display, Duration = 1.5 })
 					end
 					task.wait(0.5)
-					local b, t = getPurchaseStats()
-					buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
+					local b, t = 0, 0
+					pcall(function() b, t = getPurchaseStats() end)
+					pcall(function() buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t) end)
 				end
 			end)
 		end
@@ -295,8 +299,9 @@ GameTab:CreateToggle({
 GameTab:CreateButton({
 	Name = "Refresh Stats",
 	Callback = function()
-		local bought, total = getPurchaseStats()
-		buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
+		local bought, total = 0, 0
+		pcall(function() bought, total = getPurchaseStats() end)
+		pcall(function() buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total) end)
 		Rayfield:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", bought, total), Duration = 2 })
 	end,
 })
@@ -311,7 +316,7 @@ GameTab:CreateToggle({
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
 		autoUpgradeEnabled = value
-		upgradeStatusLabel:Set("Auto Upgrade: " .. (value and "Enabled" or "Disabled"))
+		pcall(function() upgradeStatusLabel:Set("Auto Upgrade: " .. (value and "Enabled" or "Disabled")) end)
 		if value then
 			if upgradeThread and coroutine.status(upgradeThread) ~= "dead" then return end
 			upgradeThread = task.spawn(function()
@@ -370,7 +375,7 @@ GameTab:CreateDropdown({
 	Flag = "GameTabOfferModeDropdown",
 	Callback = function(selected)
 		offerMode = selected[1] or "Accept Any"
-		offerStatusLabel:Set("Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
+		pcall(function() offerStatusLabel:Set("Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode) end)
 	end,
 })
 
@@ -380,7 +385,7 @@ GameTab:CreateToggle({
 	Flag = "AutoOfferToggle",
 	Callback = function(value)
 		autoOfferEnabled = value
-		offerStatusLabel:Set("Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
+		pcall(function() offerStatusLabel:Set("Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode) end)
 		if value then
 			if phoneOfferRemote then
 				if offerConnection then pcall(function() offerConnection:Disconnect() end) end
@@ -404,9 +409,11 @@ local sessionFireTouchFired = 0
 
 local function getFruits(tree)
 	local fruits = {}
-	for _, child in ipairs(tree:GetChildren()) do
-		if child.Name == "Fruit" then table.insert(fruits, child) end
-	end
+	pcall(function()
+		for _, child in ipairs(tree:GetChildren()) do
+			if child.Name == "Fruit" then table.insert(fruits, child) end
+		end
+	end)
 	return fruits
 end
 
@@ -460,7 +467,7 @@ FarmingTab:CreateToggle({
 	Flag = "AutoLemonToggle",
 	Callback = function(value)
 		autoLemonEnabled = value
-		farmStatusLabel:Set("Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
+		pcall(function() farmStatusLabel:Set("Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired) end)
 		if value then
 			if lemonThread and coroutine.status(lemonThread) ~= "dead" then return end
 			lemonThread = task.spawn(function()
@@ -476,7 +483,7 @@ FarmingTab:CreateToggle({
 						end
 					end
 					if not anyFruits then task.wait(0.5) end
-					farmStatusLabel:Set("Lemon Farming: " .. (autoLemonEnabled and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
+					pcall(function() farmStatusLabel:Set("Lemon Farming: " .. (autoLemonEnabled and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired) end)
 				end
 			end)
 		end
@@ -507,7 +514,7 @@ FarmingTab:CreateToggle({
 	Flag = "CashDropToggle",
 	Callback = function(value)
 		autoCashDropEnabled = value
-		cashDropLabel:Set("Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
+		pcall(function() cashDropLabel:Set("Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops) end)
 		if value then
 			if newDropRemote then
 				if cashDropConnection then pcall(function() cashDropConnection:Disconnect() end) end
@@ -516,7 +523,7 @@ FarmingTab:CreateToggle({
 						task.spawn(function()
 							local ok, result = pcall(function() return redeemRemote:InvokeServer(dropId) end)
 							sessionCashDrops = sessionCashDrops + 1
-							cashDropLabel:Set("Cash Drop: " .. (autoCashDropEnabled and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
+							pcall(function() cashDropLabel:Set("Cash Drop: " .. (autoCashDropEnabled and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops) end)
 							if ok then
 								Rayfield:Notify({ Title = "Cash Collected", Content = "$" .. tostring(result), Duration = 1.5 })
 							end
@@ -623,7 +630,7 @@ FarmingTab:CreateToggle({
 	Flag = "AutoWakeToggle",
 	Callback = function(value)
 		autoWakeEnabled = value
-		wakeStatusLabel:Set("Auto Wake: " .. (value and "Enabled" or "Disabled"))
+		pcall(function() wakeStatusLabel:Set("Auto Wake: " .. (value and "Enabled" or "Disabled")) end)
 		if value then
 			startAllWakeLoops()
 		end
