@@ -91,12 +91,13 @@ local coreRemoteSignal  = core and safeWait(core, "RemoteSignal", 10)
 local redeemRemote      = coreRemoteRequest and safeWait(coreRemoteRequest, "CashDropService.Redeem", 10)
 local newDropRemote     = coreRemoteSignal  and safeWait(coreRemoteSignal,  "CashDropService.New",    10)
 
-local LocalTycoon, ClientTycoonBalances, ClientTycoonPurchases, TycoonAnalyzer, Balance
+local LocalTycoon, ClientTycoonBalances, ClientTycoonPurchases, TycoonAnalyzer, Balance, TycoonUpgrades
 pcall(function() LocalTycoon           = require(RS.Modules.Tycoon.LocalTycoon) end)
 pcall(function() ClientTycoonBalances  = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances) end)
 pcall(function() ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases) end)
 pcall(function() TycoonAnalyzer        = require(RS.Modules.Tycoon.Component.TycoonAnalyzer) end)
 pcall(function() Balance               = require(RS.Balance) end)
+pcall(function() TycoonUpgrades        = require(RS.Modules.Tycoon.Component.TycoonUpgrades) end)
 
 local ClientTycoonPowers
 pcall(function() ClientTycoonPowers = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPowers) end)
@@ -125,6 +126,7 @@ local balances      = safeGetComponent(ClientTycoonBalances)
 local purchasesComp = safeGetComponent(ClientTycoonPurchases)
 local analyzer      = safeGetComponent(TycoonAnalyzer)
 local powersComp    = safeGetComponent(ClientTycoonPowers)
+local upgradesComp  = safeGetComponent(TycoonUpgrades)
 
 local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
 local hrp       = character:WaitForChild("HumanoidRootPart")
@@ -155,23 +157,45 @@ local upgradeStackValue = 1
 
 local function getUpgradeableEarners()
 	local earners = {}
-	if not tycoonInstance then return earners end
+	if not tycoonInstance or not Balance or not upgradesComp or not balances then return earners end
+
+	local cash = 0
+	pcall(function() cash = balances:GetCash() end)
+
 	pcall(function()
 		local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
 		if not purchasesFolder then return end
-		for _, level1 in ipairs(purchasesFolder:GetChildren()) do
-			local level2 = level1:FindFirstChild(level1.Name)
-			if level2 then
-				local level3 = level2:FindFirstChild(level1.Name)
-				if level3 then
-					local remote = level3:FindFirstChild("Upgrade")
-					if remote and remote:IsA("RemoteFunction") then
-						table.insert(earners, { name = level1.Name, remote = remote })
-					end
-				end
-			end
+
+		for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
+			local name = earnerFolder.Name
+
+			if not Balance.UpgradePrices or not Balance.UpgradePrices[name] then continue end
+
+			local prices = Balance.UpgradePrices[name]
+			local currentLevel = 0
+			pcall(function() currentLevel = upgradesComp:GetLevel(name) or 0 end)
+
+			if currentLevel >= #prices then continue end
+
+			local nextPrice = prices[currentLevel + 1]
+			if not nextPrice or nextPrice > cash then continue end
+
+			local level1 = earnerFolder:FindFirstChild(name)
+			local level2 = level1 and level1:FindFirstChild(name)
+			local remote  = level2 and level2:FindFirstChild("Upgrade")
+			if not remote or not remote:IsA("RemoteFunction") then continue end
+
+			table.insert(earners, {
+				name = name,
+				remote = remote,
+				level = currentLevel,
+				maxLevel = #prices,
+				nextPrice = nextPrice,
+			})
 		end
 	end)
+
+	table.sort(earners, function(a, b) return a.nextPrice < b.nextPrice end)
 	return earners
 end
 
@@ -353,7 +377,7 @@ featureButton(GameTab, {
 
 GameTab:CreateSection("Auto Upgrade")
 
-local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0")
+local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0 | Affordable: 0")
 local totalUpgraded = 0
 
 GameTab:CreateDropdown({
@@ -378,7 +402,7 @@ featureToggle(GameTab, {
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
 		local stackDisplay = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
-		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded)
+		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded .. " | Affordable: 0")
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -386,18 +410,19 @@ featureToggle(GameTab, {
 				if not flag or not flag.CurrentValue then break end
 				local stackCount = upgradeStackValue
 				local earners = getUpgradeableEarners()
-				for _, earner in ipairs(earners) do
-					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
-					if not innerFlag or not innerFlag.CurrentValue then break end
-					pcall(function()
-						local args = { stackCount }
-						earner.remote:InvokeServer(unpack(args))
-					end)
-					totalUpgraded = totalUpgraded + 1
-					task.wait(0.05)
+				if #earners > 0 then
+					for _, earner in ipairs(earners) do
+						local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
+						if not innerFlag or not innerFlag.CurrentValue then break end
+						local success = pcall(function()
+							earner.remote:InvokeServer(stackCount)
+						end)
+						if success then totalUpgraded = totalUpgraded + 1 end
+						task.wait(0.05)
+					end
 				end
-				local stackDisplay2 = stackCount == math.huge and "inf" or tostring(stackCount)
-				safeSet(upgradeStatusLabel, "Auto Upgrade: Enabled | Stack: x" .. stackDisplay2 .. " | Upgraded: " .. totalUpgraded)
+				local stackDisplay2 = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
+				safeSet(upgradeStatusLabel, string.format("Auto Upgrade: Enabled | Stack: x%s | Upgraded: %d | Affordable: %d", stackDisplay2, totalUpgraded, #earners))
 				task.wait(0.5)
 			end
 		end)
