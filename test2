@@ -151,16 +151,7 @@ pcall(function()
 end)
 local treeList = treesFolder and treesFolder:GetChildren() or {}
 
-local UPGRADE_STACK_BONUSES = { [0] = 1, [1] = 5, [2] = 25, [3] = 100 }
-
-local function getUpgradeStackCount()
-	if not powersComp then return 1 end
-	local level = 0
-	pcall(function()
-		level = powersComp:GetSelectedLevel("UpgradeStack") or 0
-	end)
-	return UPGRADE_STACK_BONUSES[level] or 1
-end
+local upgradeStackValue = 1
 
 local function getUpgradeableEarners()
 	local earners = {}
@@ -182,11 +173,6 @@ local function getUpgradeableEarners()
 		end
 	end)
 	return earners
-end
-
-local function canUpgradeEarner(earnerName)
-	if not Balance or not Balance.UpgradePrices then return false end
-	return Balance.UpgradePrices[earnerName] ~= nil
 end
 
 MainTab:CreateSection("System")
@@ -370,31 +356,48 @@ GameTab:CreateSection("Auto Upgrade")
 local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0")
 local totalUpgraded = 0
 
+GameTab:CreateDropdown({
+	Name = "Upgrade Stack",
+	Options = { "1", "5", "25", "100", "inf" },
+	CurrentOption = { "1" },
+	MultipleOptions = false,
+	Flag = "AutoUpgradeStackDropdown",
+	Callback = function(selected)
+		local val = type(selected) == "table" and selected[1] or selected
+		if val == "inf" then
+			upgradeStackValue = math.huge
+		else
+			upgradeStackValue = tonumber(val) or 1
+		end
+	end,
+})
+
 featureToggle(GameTab, {
 	Name = "Enable Auto Upgrade",
 	CurrentValue = false,
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
-		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. getUpgradeStackCount() .. " | Upgraded: " .. totalUpgraded)
+		local stackDisplay = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
+		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded)
 		if not value then return end
 		task.spawn(function()
 			while true do
 				local flag = rayfieldLibrary.Flags.AutoUpgradeToggle
 				if not flag or not flag.CurrentValue then break end
-				local stackCount = getUpgradeStackCount()
+				local stackCount = upgradeStackValue
 				local earners = getUpgradeableEarners()
 				for _, earner in ipairs(earners) do
 					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
 					if not innerFlag or not innerFlag.CurrentValue then break end
-					if canUpgradeEarner(earner.name) then
-						pcall(function()
-							earner.remote:InvokeServer(stackCount)
-						end)
-						totalUpgraded = totalUpgraded + 1
-						task.wait(0.05)
-					end
+					pcall(function()
+						local args = { stackCount }
+						earner.remote:InvokeServer(unpack(args))
+					end)
+					totalUpgraded = totalUpgraded + 1
+					task.wait(0.05)
 				end
-				safeSet(upgradeStatusLabel, "Auto Upgrade: Enabled | Stack: x" .. stackCount .. " | Upgraded: " .. totalUpgraded)
+				local stackDisplay2 = stackCount == math.huge and "inf" or tostring(stackCount)
+				safeSet(upgradeStatusLabel, "Auto Upgrade: Enabled | Stack: x" .. stackDisplay2 .. " | Upgraded: " .. totalUpgraded)
 				task.wait(0.5)
 			end
 		end)
