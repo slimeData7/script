@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Stats = game:GetService("Stats")
+local CollectionService = game:GetService("CollectionService")
 
 local localPlayer = Players.LocalPlayer
 
@@ -91,15 +92,14 @@ local redeemRemote      = coreRemoteRequest and safeWait(coreRemoteRequest, "Cas
 local newDropRemote     = coreRemoteSignal  and safeWait(coreRemoteSignal,  "CashDropService.New",    10)
 
 local LocalTycoon, ClientTycoonBalances, ClientTycoonPurchases, TycoonAnalyzer, Balance
-pcall(function() LocalTycoon          = require(RS.Modules.Tycoon.LocalTycoon) end)
-pcall(function() ClientTycoonBalances = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances) end)
+pcall(function() LocalTycoon           = require(RS.Modules.Tycoon.LocalTycoon) end)
+pcall(function() ClientTycoonBalances  = require(RS.Modules.Tycoon.Component.Client.ClientTycoonBalances) end)
 pcall(function() ClientTycoonPurchases = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPurchases) end)
-pcall(function() TycoonAnalyzer       = require(RS.Modules.Tycoon.Component.TycoonAnalyzer) end)
-pcall(function() Balance              = require(RS.Balance) end)
+pcall(function() TycoonAnalyzer        = require(RS.Modules.Tycoon.Component.TycoonAnalyzer) end)
+pcall(function() Balance               = require(RS.Balance) end)
 
-local ClientTycoonUpgrades, ClientTycoonPowers
-pcall(function() ClientTycoonUpgrades = require(RS.Modules.Tycoon.Component.Client.ClientTycoonUpgrades) end)
-pcall(function() ClientTycoonPowers   = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPowers) end)
+local ClientTycoonPowers
+pcall(function() ClientTycoonPowers = require(RS.Modules.Tycoon.Component.Client.ClientTycoonPowers) end)
 
 local myTycoon
 if LocalTycoon then
@@ -124,7 +124,6 @@ end
 local balances      = safeGetComponent(ClientTycoonBalances)
 local purchasesComp = safeGetComponent(ClientTycoonPurchases)
 local analyzer      = safeGetComponent(TycoonAnalyzer)
-local upgradesComp  = safeGetComponent(ClientTycoonUpgrades)
 local powersComp    = safeGetComponent(ClientTycoonPowers)
 
 local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
@@ -167,11 +166,11 @@ local function getUpgradeableEarners()
 	local earners = {}
 	if not tycoonInstance then return earners end
 	pcall(function()
-		for _, obj in ipairs(tycoonInstance:GetDescendants()) do
-			if obj:IsA("RemoteFunction") and obj.Name == "Upgrade" then
-				local earnerRemotes = obj.Parent
-				if earnerRemotes and earnerRemotes.Name == "Remotes" then
-					table.insert(earners, { name = earnerRemotes.Parent.Name, remote = obj })
+		for _, instance in ipairs(CollectionService:GetTagged("Tycoon.Earner")) do
+			if instance:IsDescendantOf(tycoonInstance) then
+				local remote = instance:FindFirstChild("Upgrade")
+				if remote and remote:IsA("RemoteFunction") then
+					table.insert(earners, { name = instance.Name, remote = remote })
 				end
 			end
 		end
@@ -378,23 +377,19 @@ featureToggle(GameTab, {
 				if not flag or not flag.CurrentValue then break end
 				local stackCount = getUpgradeStackCount()
 				local earners = getUpgradeableEarners()
-				local anyUpgraded = false
 				for _, earner in ipairs(earners) do
 					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
 					if not innerFlag or not innerFlag.CurrentValue then break end
 					if canUpgradeEarner(earner.name) then
-						local ok = pcall(function()
+						pcall(function()
 							earner.remote:InvokeServer(stackCount)
 						end)
-						if ok then
-							totalUpgraded = totalUpgraded + 1
-							anyUpgraded = true
-						end
-						task.wait(0.1)
+						totalUpgraded = totalUpgraded + 1
+						task.wait(0.05)
 					end
 				end
 				safeSet(upgradeStatusLabel, "Auto Upgrade: Enabled | Stack: x" .. stackCount .. " | Upgraded: " .. totalUpgraded)
-				task.wait(anyUpgraded and 0.3 or 1)
+				task.wait(0.5)
 			end
 		end)
 	end,
@@ -574,8 +569,8 @@ featureToggle(FarmingTab, {
 
 FarmingTab:CreateSection("Auto Wake Income")
 
-local wakeTracked        = {}
-local wakeSelectedStreams = {}
+local wakeTracked         = {}
+local wakeSelectedStreams  = {}
 
 local function getManualStreamNames()
 	local names = {}
@@ -796,9 +791,7 @@ featureToggle(MinigameTab, {
 	Flag = "AutoMinigameToggle",
 	Callback = function(value)
 		autoMinigameEnabled = value
-		if value then
-			minigameLoop()
-		end
+		if value then minigameLoop() end
 	end,
 })
 
