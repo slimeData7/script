@@ -6,7 +6,6 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Stats = game:GetService("Stats")
-local CollectionService = game:GetService("CollectionService")
 
 local localPlayer = Players.LocalPlayer
 
@@ -39,11 +38,6 @@ local mainWindow = rayfieldLibrary:CreateWindow({
 	Discord = { Enabled = true, Invite = "cactushub", RememberJoins = true },
 	KeySystem = false,
 })
-
-local function safeSet(label, text)
-	if not label then return end
-	pcall(function() label:Set(text) end)
-end
 
 local function featureToggle(tab, config)
 	local wrapped = {}
@@ -155,36 +149,48 @@ local treeList = treesFolder and treesFolder:GetChildren() or {}
 
 local upgradeStackValue = 1
 
+local function findUpgradeRemote(folder)
+	if not folder then return nil end
+	local function search(inst, depth)
+		if depth > 5 then return nil end
+		if inst:IsA("RemoteFunction") and inst.Name == "Upgrade" then
+			return inst
+		end
+		for _, child in ipairs(inst:GetChildren()) do
+			local res = search(child, depth + 1)
+			if res then return res end
+		end
+		return nil
+	end
+	return search(folder, 0)
+end
+
 local function getUpgradeableEarners()
 	local earners = {}
 	if not tycoonInstance or not Balance or not upgradesComp or not balances then return earners end
 
 	local cash = 0
-	pcall(function() cash = balances:GetCash() end)
+	local success, cashVal = pcall(function() cash = balances:GetCash() end)
+	if not success then return earners end
 
-	pcall(function()
-		local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
-		if not purchasesFolder then return end
+	local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
+	if not purchasesFolder then return earners end
 
-		for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
-			local name = earnerFolder.Name
-
-			if not Balance.UpgradePrices or not Balance.UpgradePrices[name] then continue end
-
+	for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
+		local name = earnerFolder.Name
+		if Balance.UpgradePrices and Balance.UpgradePrices[name] then
 			local prices = Balance.UpgradePrices[name]
 			local currentLevel = 0
-			pcall(function() currentLevel = upgradesComp:GetLevel(name) or 0 end)
-
-			if currentLevel >= #prices then continue end
-
+			local ok, level = pcall(function() return upgradesComp:GetLevel(name) end)
+			if ok and level then currentLevel = level end
+			if currentLevel >= #prices then goto continue end
 			local nextPrice = prices[currentLevel + 1]
-			if not nextPrice or nextPrice > cash then continue end
-
-			local level1 = earnerFolder:FindFirstChild(name)
-			local level2 = level1 and level1:FindFirstChild(name)
-			local remote  = level2 and level2:FindFirstChild("Upgrade")
-			if not remote or not remote:IsA("RemoteFunction") then continue end
-
+			if not nextPrice then goto continue end
+			local canAfford = false
+			local okAfford = pcall(function() canAfford = nextPrice <= cash end)
+			if not okAfford or not canAfford then goto continue end
+			local remote = findUpgradeRemote(earnerFolder)
+			if not remote then goto continue end
 			table.insert(earners, {
 				name = name,
 				remote = remote,
@@ -193,7 +199,8 @@ local function getUpgradeableEarners()
 				nextPrice = nextPrice,
 			})
 		end
-	end)
+		::continue::
+	end
 
 	table.sort(earners, function(a, b) return a.nextPrice < b.nextPrice end)
 	return earners
@@ -215,7 +222,7 @@ pcall(function()
 			fpsValue   = math.floor(frameCount / (now - lastTime))
 			frameCount = 0
 			lastTime   = now
-			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
+			pcall(function() statusLabel:Set("FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms") end)
 		end
 	end)
 end)
@@ -225,7 +232,7 @@ task.spawn(function()
 		pcall(function()
 			local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
 			pingValue = math.floor(ping)
-			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
+			pcall(function() statusLabel:Set("FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms") end)
 		end)
 		task.wait(1)
 	end
@@ -320,10 +327,6 @@ local currentCategory = "All"
 
 GameTab:CreateSection("Auto Buy")
 
-local totalBought, totalItems = 0, 0
-pcall(function() totalBought, totalItems = getPurchaseStats() end)
-local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
-
 GameTab:CreateDropdown({
 	Name = "Category",
 	Options = getUniqueCategories(),
@@ -332,9 +335,6 @@ GameTab:CreateDropdown({
 	Flag = "CategoryDropdown",
 	Callback = function(selected)
 		currentCategory = type(selected) == "table" and selected[1] or selected
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 	end,
 })
 
@@ -344,9 +344,6 @@ featureToggle(GameTab, {
 	Flag = "AutoBuyToggle",
 	Callback = function(value)
 		autoBuyEnabled = value
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -357,9 +354,6 @@ featureToggle(GameTab, {
 					buyItem(affordable[1].purchaseObj)
 				end
 				task.wait(0.5)
-				local b2, t2 = 0, 0
-				pcall(function() b2, t2 = getPurchaseStats() end)
-				safeSet(buyStatusLabel, "Auto Buy: Enabled | Category: " .. currentCategory .. " | Bought: " .. b2 .. " / " .. t2)
 			end
 		end)
 	end,
@@ -368,17 +362,12 @@ featureToggle(GameTab, {
 featureButton(GameTab, {
 	Name = "Refresh Stats",
 	Callback = function()
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
+		local b, t = getPurchaseStats()
 		rayfieldLibrary:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", b, t), Duration = 2 })
 	end,
 })
 
 GameTab:CreateSection("Auto Upgrade")
-
-local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0 | Affordable: 0")
-local totalUpgraded = 0
 
 GameTab:CreateDropdown({
 	Name = "Upgrade Stack",
@@ -401,28 +390,29 @@ featureToggle(GameTab, {
 	CurrentValue = false,
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
-		local stackDisplay = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
-		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded .. " | Affordable: 0")
 		if not value then return end
 		task.spawn(function()
+			local totalUpgraded = 0
 			while true do
 				local flag = rayfieldLibrary.Flags.AutoUpgradeToggle
 				if not flag or not flag.CurrentValue then break end
 				local stackCount = upgradeStackValue
 				local earners = getUpgradeableEarners()
-				if #earners > 0 then
-					for _, earner in ipairs(earners) do
-						local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
-						if not innerFlag or not innerFlag.CurrentValue then break end
-						local success = pcall(function()
+				for _, earner in ipairs(earners) do
+					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
+					if not innerFlag or not innerFlag.CurrentValue then break end
+					local success = false
+					pcall(function()
+						if stackCount == math.huge then
+							earner.remote:InvokeServer(1e9)
+						else
 							earner.remote:InvokeServer(stackCount)
-						end)
-						if success then totalUpgraded = totalUpgraded + 1 end
-						task.wait(0.05)
-					end
+						end
+						success = true
+					end)
+					if success then totalUpgraded = totalUpgraded + 1 end
+					task.wait(0.1)
 				end
-				local stackDisplay2 = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
-				safeSet(upgradeStatusLabel, string.format("Auto Upgrade: Enabled | Stack: x%s | Upgraded: %d | Affordable: %d", stackDisplay2, totalUpgraded, #earners))
 				task.wait(0.5)
 			end
 		end)
@@ -453,8 +443,6 @@ local function handleOffer()
 	offerDebounce = false
 end
 
-local offerStatusLabel = GameTab:CreateLabel("Auto Offer: Disabled | Mode: Accept Any")
-
 GameTab:CreateDropdown({
 	Name = "Offer Mode",
 	Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
@@ -463,7 +451,6 @@ GameTab:CreateDropdown({
 	Flag = "GameTabOfferModeDropdown",
 	Callback = function(selected)
 		offerMode = type(selected) == "table" and selected[1] or selected
-		safeSet(offerStatusLabel, "Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 	end,
 })
 
@@ -473,7 +460,6 @@ featureToggle(GameTab, {
 	Flag = "AutoOfferToggle",
 	Callback = function(value)
 		autoOfferEnabled = value
-		safeSet(offerStatusLabel, "Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 		if offerConnection then pcall(function() offerConnection:Disconnect() end) offerConnection = nil end
 		if value and phoneOfferRemote then
 			offerConnection = phoneOfferRemote.OnClientEvent:Connect(function(v)
@@ -530,14 +516,11 @@ end
 
 FarmingTab:CreateSection("Lemon Farming")
 
-local farmStatusLabel = FarmingTab:CreateLabel("Lemon Farming: Disabled | Collected: 0 | Touch: 0")
-
 featureToggle(FarmingTab, {
 	Name = "Auto Collect Lemons",
 	CurrentValue = false,
 	Flag = "AutoLemonToggle",
 	Callback = function(value)
-		safeSet(farmStatusLabel, "Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -554,7 +537,6 @@ featureToggle(FarmingTab, {
 					end
 				end
 				if not anyFruits then task.wait(0.5) end
-				safeSet(farmStatusLabel, "Lemon Farming: Enabled | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 			end
 		end)
 	end,
@@ -576,7 +558,6 @@ featureButton(FarmingTab, {
 
 FarmingTab:CreateSection("Cash Drops")
 
-local cashDropLabel      = FarmingTab:CreateLabel("Cash Drop: Disabled | Total: 0")
 local cashDropConnection = nil
 
 featureToggle(FarmingTab, {
@@ -584,7 +565,6 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "CashDropToggle",
 	Callback = function(value)
-		safeSet(cashDropLabel, "Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
 		if cashDropConnection then pcall(function() cashDropConnection:Disconnect() end) cashDropConnection = nil end
 		if value and newDropRemote then
 			cashDropConnection = newDropRemote.OnClientEvent:Connect(function(dropId)
@@ -594,7 +574,6 @@ featureToggle(FarmingTab, {
 				task.spawn(function()
 					pcall(function() redeemRemote:InvokeServer(dropId) end)
 					sessionCashDrops = sessionCashDrops + 1
-					safeSet(cashDropLabel, "Cash Drop: Enabled | Total: " .. sessionCashDrops)
 				end)
 			end)
 		end
@@ -660,7 +639,6 @@ local function startAllWakeLoops()
 	end)
 end
 
-local wakeStatusLabel       = FarmingTab:CreateLabel("Auto Wake: Disabled")
 local manualStreamNames     = getManualStreamNames()
 local streamDropdownOptions = { "All" }
 for _, n in ipairs(manualStreamNames) do table.insert(streamDropdownOptions, n) end
@@ -686,7 +664,6 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "AutoWakeToggle",
 	Callback = function(value)
-		safeSet(wakeStatusLabel, "Auto Wake: " .. (value and "Enabled" or "Disabled"))
 		if value then startAllWakeLoops() end
 	end,
 })
@@ -814,10 +791,7 @@ local function minigameLoop()
 	end)
 end
 
-MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
 MinigameTab:CreateSection("Lemon Dash")
-
-local minigameStatusLabel = MinigameTab:CreateLabel("Status: Disabled | Won: 0 | Cheered: 0")
 
 featureToggle(MinigameTab, {
 	Name = "Auto Win Races",
@@ -837,28 +811,6 @@ featureButton(MinigameTab, {
 		rayfieldLibrary:Notify({ Title = "Coming Soon", Content = "Other minigames will be added soon", Duration = 2 })
 	end,
 })
-
-task.spawn(function()
-	while true do
-		task.wait(1)
-		pcall(function()
-			local availableTime = getRaceAvailableTime()
-			local statusStr
-			if autoMinigameEnabled then
-				if availableTime > 0 then
-					local mins = math.floor(availableTime / 60)
-					local secs = math.floor(availableTime % 60)
-					statusStr = string.format("Status: Waiting %d:%02d | Won: %d | Cheered: %d", mins, secs, minigamesWon, timesCheered)
-				else
-					statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
-				end
-			else
-				statusStr = string.format("Status: Disabled | Won: %d | Cheered: %d", minigamesWon, timesCheered)
-			end
-			safeSet(minigameStatusLabel, statusStr)
-		end)
-	end
-end)
 
 MiscTab:CreateSection("Settings - Movement")
 
