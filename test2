@@ -166,11 +166,17 @@ local function getUpgradeableEarners()
 	local earners = {}
 	if not tycoonInstance then return earners end
 	pcall(function()
-		for _, instance in ipairs(CollectionService:GetTagged("Tycoon.Earner")) do
-			if instance:IsDescendantOf(tycoonInstance) then
-				local remote = instance:FindFirstChild("Upgrade")
-				if remote and remote:IsA("RemoteFunction") then
-					table.insert(earners, { name = instance.Name, remote = remote })
+		local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
+		if not purchasesFolder then return end
+		for _, level1 in ipairs(purchasesFolder:GetChildren()) do
+			local level2 = level1:FindFirstChild(level1.Name)
+			if level2 then
+				local level3 = level2:FindFirstChild(level1.Name)
+				if level3 then
+					local remote = level3:FindFirstChild("Upgrade")
+					if remote and remote:IsA("RemoteFunction") then
+						table.insert(earners, { name = level1.Name, remote = remote })
+					end
 				end
 			end
 		end
