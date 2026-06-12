@@ -19,6 +19,7 @@ local ClientTycoonPurchases = nil
 local TycoonAnalyzer = nil
 local Balance = nil
 local TycoonUpgrades = nil
+local Tycoon = nil
 
 pcall(function()
     LocalTycoon = require(RS.Modules.Tycoon.LocalTycoon)
@@ -27,6 +28,7 @@ pcall(function()
     TycoonAnalyzer = require(RS.Modules.Tycoon.Component.TycoonAnalyzer)
     Balance = require(RS.Balance)
     TycoonUpgrades = require(RS.Modules.Tycoon.Component.TycoonUpgrades)
+    Tycoon = require(RS.Modules.Tycoon.Tycoon)
 end)
 
 local myTycoon = nil
@@ -38,6 +40,12 @@ if LocalTycoon then
     end
     if myTycoon and myTycoon.IsLoaded and not myTycoon:IsLoaded() then
         pcall(function() myTycoon:WaitForLoaded() end)
+    end
+elseif Tycoon then
+    myTycoon = Tycoon.getLocal()
+    if not myTycoon then
+        repeat task.wait() until Tycoon.getLocal()
+        myTycoon = Tycoon.getLocal()
     end
 end
 
@@ -204,7 +212,7 @@ if MainTab then
         MainTab:CreateSection("Info")
         MainTab:CreateParagraph({
             Title = "Latest Update",
-            Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade (Fixed)\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Sewer Features\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
+            Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade (Fixed)\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Auto Friend Request\n[+] Sewer Features\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
         })
     end)
     
@@ -417,6 +425,22 @@ if GameTab then
         upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled")
     end)
     
+    local function getAllEarners()
+        local earners = {}
+        pcall(function()
+            if not Balance then return end
+            if Balance.EarnerIncomes then
+                for name, _ in pairs(Balance.EarnerIncomes) do
+                    if Balance.UpgradePrices and Balance.UpgradePrices[name] then
+                        table.insert(earners, name)
+                    end
+                end
+            end
+        end)
+        table.sort(earners)
+        return earners
+    end
+    
     local function getUpgradeableEarners()
         local earners = {}
         pcall(function()
@@ -430,9 +454,10 @@ if GameTab then
             local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
             if not purchasesFolder then return end
             
-            for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
-                local name = earnerFolder.Name
-                local prices = Balance.UpgradePrices and Balance.UpgradePrices[name]
+            local allEarnerNames = getAllEarners()
+            
+            for _, name in ipairs(allEarnerNames) do
+                local prices = Balance.UpgradePrices[name]
                 
                 if prices and type(prices) == "table" then
                     local currentLevel = 0
@@ -441,19 +466,22 @@ if GameTab then
                     if currentLevel < #prices then
                         local nextPrice = prices[currentLevel + 1]
                         if nextPrice and nextPrice <= cash then
-                            local level1 = earnerFolder:FindFirstChild(name)
-                            if level1 then
-                                local level2 = level1:FindFirstChild(name)
-                                if level2 then
-                                    local remote = level2:FindFirstChild("Upgrade")
-                                    if remote and remote:IsA("RemoteFunction") then
-                                        table.insert(earners, {
-                                            name = name,
-                                            remote = remote,
-                                            level = currentLevel,
-                                            maxLevel = #prices,
-                                            nextPrice = nextPrice
-                                        })
+                            local earnerFolder = purchasesFolder:FindFirstChild(name)
+                            if earnerFolder then
+                                local level1 = earnerFolder:FindFirstChild(name)
+                                if level1 then
+                                    local level2 = level1:FindFirstChild(name)
+                                    if level2 then
+                                        local remote = level2:FindFirstChild("Upgrade")
+                                        if remote and remote:IsA("RemoteFunction") then
+                                            table.insert(earners, {
+                                                name = name,
+                                                remote = remote,
+                                                level = currentLevel,
+                                                maxLevel = #prices,
+                                                nextPrice = nextPrice
+                                            })
+                                        end
                                     end
                                 end
                             end
@@ -486,17 +514,20 @@ if GameTab then
                     upgradeThread = task.spawn(function()
                         while autoUpgradeEnabled do
                             local upgradeable = getUpgradeableEarners()
+                            
                             if #upgradeable > 0 then
                                 for _, earner in ipairs(upgradeable) do
                                     if autoUpgradeEnabled then
                                         pcall(function()
                                             earner.remote:InvokeServer(1)
+                                            print(string.format("Upgraded %s (Level %d)", earner.name, earner.level + 1))
                                         end)
-                                        task.wait(0.15)
+                                        task.wait(0.1)
                                     end
                                 end
                             end
-                            task.wait(0.5)
+                            
+                            task.wait(0.3)
                         end
                     end)
                 else
@@ -1081,6 +1112,57 @@ if MinigameTab then
 end
 
 if MiscTab then
+    pcall(function()
+        MiscTab:CreateSection("Auto Friend Request")
+    end)
+    
+    local autoFriendEnabled = false
+    local friendThread = nil
+    
+    pcall(function()
+        MiscTab:CreateToggle({
+            Name = "Auto Friend Request Players",
+            CurrentValue = false,
+            Flag = "AutoFriendToggle",
+            Callback = function(value)
+                autoFriendEnabled = value
+                if value then
+                    if friendThread and coroutine.status(friendThread) ~= "dead" then return end
+                    friendThread = task.spawn(function()
+                        while autoFriendEnabled do
+                            pcall(function()
+                                local localPlayer = Players.LocalPlayer
+                                if localPlayer then
+                                    for _, targetPlayer in ipairs(Players:GetPlayers()) do
+                                        if targetPlayer ~= localPlayer and autoFriendEnabled then
+                                            local status = nil
+                                            pcall(function()
+                                                status = localPlayer:GetFriendStatus(targetPlayer)
+                                            end)
+                                            
+                                            if status == Enum.FriendStatus.NotFriend or status == Enum.FriendStatus.Unknown then
+                                                pcall(function()
+                                                    localPlayer:RequestFriendship(targetPlayer)
+                                                    print(string.format("Friend request sent to %s", targetPlayer.Name))
+                                                end)
+                                                task.wait(0.5)
+                                            end
+                                        end
+                                    end
+                                end
+                            end)
+                            task.wait(2)
+                        end
+                    end)
+                    Rayfield:Notify({ Title = "Enabled", Content = "Auto friend request enabled!", Duration = 2 })
+                else
+                    if friendThread then task.cancel(friendThread) friendThread = nil end
+                    Rayfield:Notify({ Title = "Disabled", Content = "Auto friend request disabled", Duration = 2 })
+                end
+            end,
+        })
+    end)
+    
     pcall(function()
         MiscTab:CreateSection("Settings - Movement")
     end)
