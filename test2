@@ -182,15 +182,15 @@ if MainTab then
     pcall(function()
         MainTab:CreateSection("System")
     end)
-    
+
     local fpsLabel = nil
     pcall(function()
         fpsLabel = MainTab:CreateLabel("FPS: --   |   Ping: -- ms")
     end)
-    
+
     local lastFpsUpdate = tick()
     local frameCount = 0
-    
+
     RunService.Heartbeat:Connect(function()
         frameCount = frameCount + 1
         local currentTime = tick()
@@ -207,15 +207,15 @@ if MainTab then
             lastFpsUpdate = currentTime
         end
     end)
-    
+
     pcall(function()
         MainTab:CreateSection("Info")
         MainTab:CreateParagraph({
             Title = "Latest Update",
-            Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade (Fixed)\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Auto Friend Request\n[+] Sewer Features\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
+            Content = "[+] Auto Collect All Lemons\n[+] Auto Buy Purchases\n[+] Auto Upgrade Earners (Fixed)\n[+] Auto Phone Offers\n[+] Auto Wake Income Streams\n[+] Auto Collect Cash Drops\n[+] Auto Minigames (Beta)\n[+] Auto Friend Request\n[+] Sewer Features\n[+] Anti AFK\n[+] Session Stats\n[+] Workspace Controls"
         })
     end)
-    
+
     pcall(function()
         MainTab:CreateSection("Utilities")
         MainTab:CreateToggle({
@@ -232,7 +232,7 @@ if MainTab then
             end,
         })
     end)
-    
+
     pcall(function()
         MainTab:CreateButton({
             Name = "Copy Discord",
@@ -335,13 +335,13 @@ if GameTab then
     pcall(function()
         GameTab:CreateSection("Auto Buy")
     end)
-    
+
     local totalBought, totalItems = getPurchaseStats()
     local buyStatusLabel = nil
     pcall(function()
         buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
     end)
-    
+
     pcall(function()
         GameTab:CreateDropdown({
             Name = "Category",
@@ -361,7 +361,7 @@ if GameTab then
             end,
         })
     end)
-    
+
     pcall(function()
         GameTab:CreateToggle({
             Name = "Enable Auto Buy",
@@ -399,7 +399,7 @@ if GameTab then
             end,
         })
     end)
-    
+
     pcall(function()
         GameTab:CreateButton({
             Name = "Refresh Stats",
@@ -410,123 +410,93 @@ if GameTab then
                         buyStatusLabel:Set("Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. bought .. " / " .. total)
                     end)
                 end
-                print(string.format("📊 Buttons bought: %d / %d", bought, total))
+                print(string.format("Buttons bought: %d / %d", bought, total))
                 Rayfield:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", bought, total), Duration = 2 })
             end,
         })
     end)
-    
+
+    -- Auto Upgrade Earners
     local autoUpgradeEnabled = false
     local upgradeThread = nil
     local upgradeStatusLabel = nil
-    
+
+    local function toFolderName(name)
+        return name:gsub("(%l)(%u)", "%1 %2")
+    end
+
+    local function findEarnerFolder(purchasesFolder, earnerName)
+        local spaced = toFolderName(earnerName)
+        if purchasesFolder:FindFirstChild(spaced) then return purchasesFolder:FindFirstChild(spaced) end
+        if purchasesFolder:FindFirstChild(earnerName) then return purchasesFolder:FindFirstChild(earnerName) end
+        local lower = earnerName:lower():gsub("%s", "")
+        for _, child in ipairs(purchasesFolder:GetChildren()) do
+            if child.Name:lower():gsub("%s", "") == lower then
+                return child
+            end
+        end
+        return nil
+    end
+
     pcall(function()
-        GameTab:CreateSection("Auto Upgrade")
-        upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled")
+        GameTab:CreateSection("Auto Upgrade Earners")
+        upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade Earners: Disabled")
     end)
-    
-    local function getAllEarners()
-        local earners = {}
-        pcall(function()
-            if not Balance then return end
-            if Balance.EarnerIncomes then
-                for name, _ in pairs(Balance.EarnerIncomes) do
-                    if Balance.UpgradePrices and Balance.UpgradePrices[name] then
-                        table.insert(earners, name)
-                    end
-                end
-            end
-        end)
-        table.sort(earners)
-        return earners
-    end
-    
-    local function getUpgradeableEarners()
-        local earners = {}
-        pcall(function()
-            if not tycoonInstance or not upgradesComp or not Balance then return end
-            
-            local cash = 0
-            if balances then
-                pcall(function() cash = balances:GetCash() end)
-            end
-            
-            local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
-            if not purchasesFolder then return end
-            
-            local allEarnerNames = getAllEarners()
-            
-            for _, name in ipairs(allEarnerNames) do
-                local prices = Balance.UpgradePrices[name]
-                
-                if prices and type(prices) == "table" then
-                    local currentLevel = 0
-                    pcall(function() currentLevel = upgradesComp:GetLevel(name) or 0 end)
-                    
-                    if currentLevel < #prices then
-                        local nextPrice = prices[currentLevel + 1]
-                        if nextPrice and nextPrice <= cash then
-                            local earnerFolder = purchasesFolder:FindFirstChild(name)
-                            if earnerFolder then
-                                local level1 = earnerFolder:FindFirstChild(name)
-                                if level1 then
-                                    local level2 = level1:FindFirstChild(name)
-                                    if level2 then
-                                        local remote = level2:FindFirstChild("Upgrade")
-                                        if remote and remote:IsA("RemoteFunction") then
-                                            table.insert(earners, {
-                                                name = name,
-                                                remote = remote,
-                                                level = currentLevel,
-                                                maxLevel = #prices,
-                                                nextPrice = nextPrice
-                                            })
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            
-            table.sort(earners, function(a, b) return a.nextPrice < b.nextPrice end)
-        end)
-        return earners
-    end
-    
+
     pcall(function()
         GameTab:CreateToggle({
-            Name = "Enable Auto Upgrade",
+            Name = "Enable Auto Upgrade Earners",
             CurrentValue = false,
             Flag = "AutoUpgradeToggle",
             Callback = function(value)
                 autoUpgradeEnabled = value
                 if upgradeStatusLabel then
                     pcall(function()
-                        upgradeStatusLabel:Set("Auto Upgrade: " .. (value and "Enabled" or "Disabled"))
+                        upgradeStatusLabel:Set("Auto Upgrade Earners: " .. (value and "Enabled" or "Disabled"))
                     end)
                 end
-                
+
                 if value then
                     if upgradeThread and coroutine.status(upgradeThread) ~= "dead" then return end
-                    
                     upgradeThread = task.spawn(function()
                         while autoUpgradeEnabled do
-                            local upgradeable = getUpgradeableEarners()
-                            
-                            if #upgradeable > 0 then
-                                for _, earner in ipairs(upgradeable) do
-                                    if autoUpgradeEnabled then
+                            pcall(function()
+                                if not Balance or not upgradesComp or not tycoonInstance then return end
+
+                                local cash = 0
+                                if balances then pcall(function() cash = balances:GetCash() end) end
+
+                                local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
+                                if not purchasesFolder then return end
+
+                                for earnerName, _ in pairs(Balance.EarnerIncomes) do
+                                    if not autoUpgradeEnabled then break end
+                                    if not Balance.UpgradePrices[earnerName] then continue end
+
+                                    local prices = Balance.UpgradePrices[earnerName]
+                                    local currentLevel = 0
+                                    pcall(function() currentLevel = upgradesComp:GetLevel(earnerName) or 0 end)
+                                    if currentLevel >= #prices then continue end
+
+                                    local nextPrice = prices[currentLevel + 1]
+                                    if not nextPrice or nextPrice > cash then continue end
+
+                                    local earnerFolder = findEarnerFolder(purchasesFolder, earnerName)
+                                    if not earnerFolder then continue end
+
+                                    local folderName = earnerFolder.Name
+                                    local inner1 = earnerFolder:FindFirstChild(folderName)
+                                    local inner2 = inner1 and inner1:FindFirstChild(folderName)
+                                    local upgradeRemote = inner2 and inner2:FindFirstChild("Upgrade")
+
+                                    if upgradeRemote and upgradeRemote:IsA("RemoteFunction") then
                                         pcall(function()
-                                            earner.remote:InvokeServer(1)
-                                            print(string.format("Upgraded %s (Level %d)", earner.name, earner.level + 1))
+                                            upgradeRemote:InvokeServer(1)
                                         end)
                                         task.wait(0.1)
                                     end
                                 end
-                            end
-                            
+                            end)
                             task.wait(0.3)
                         end
                     end)
@@ -572,9 +542,9 @@ end
 if GameTab then
     pcall(function()
         GameTab:CreateSection("Auto Phone Offers")
-        
+
         local offerStatusLabel = GameTab:CreateLabel("Auto Offer: Disabled | Mode: Accept Any")
-        
+
         GameTab:CreateDropdown({
             Name = "Offer Mode",
             Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
@@ -589,7 +559,7 @@ if GameTab then
                 end
             end,
         })
-        
+
         GameTab:CreateToggle({
             Name = "Enable Auto Offer",
             CurrentValue = false,
@@ -655,23 +625,23 @@ local function collectFruit(fruit)
     if not fruit or not hrp then return end
     pcall(function()
         local clickDetector = fruit:FindFirstChildWhichIsA("ClickDetector", true)
-        if clickDetector then 
-            fireclickdetector(clickDetector) 
-            sessionLemonsCollected = sessionLemonsCollected + 1 
-            return 
+        if clickDetector then
+            fireclickdetector(clickDetector)
+            sessionLemonsCollected = sessionLemonsCollected + 1
+            return
         end
         local prompt = fruit:FindFirstChildWhichIsA("ProximityPrompt", true)
-        if prompt then 
-            fireproximityprompt(prompt) 
-            sessionLemonsCollected = sessionLemonsCollected + 1 
-            return 
+        if prompt then
+            fireproximityprompt(prompt)
+            sessionLemonsCollected = sessionLemonsCollected + 1
+            return
         end
         local part = fruit:IsA("BasePart") and fruit or fruit:FindFirstChildWhichIsA("BasePart")
-        if part then 
-            firetouchinterest(hrp, part, 0) 
-            firetouchinterest(hrp, part, 1) 
-            sessionFireTouchFired = sessionFireTouchFired + 1 
-            sessionLemonsCollected = sessionLemonsCollected + 1 
+        if part then
+            firetouchinterest(hrp, part, 0)
+            firetouchinterest(hrp, part, 1)
+            sessionFireTouchFired = sessionFireTouchFired + 1
+            sessionLemonsCollected = sessionLemonsCollected + 1
         end
     end)
 end
@@ -686,12 +656,12 @@ if FarmingTab then
     pcall(function()
         FarmingTab:CreateSection("Lemon Farming")
     end)
-    
+
     local farmStatusLabel = nil
     pcall(function()
         farmStatusLabel = FarmingTab:CreateLabel("Lemon Farming: Disabled | Collected: 0 | Touch: 0")
     end)
-    
+
     pcall(function()
         FarmingTab:CreateToggle({
             Name = "Auto Collect Lemons",
@@ -732,7 +702,7 @@ if FarmingTab then
             end,
         })
     end)
-    
+
     pcall(function()
         FarmingTab:CreateButton({
             Name = "Teleport to Nearest Fruit",
@@ -748,16 +718,16 @@ if FarmingTab then
             end,
         })
     end)
-    
+
     pcall(function()
         FarmingTab:CreateSection("Cash Drops")
     end)
-    
+
     local cashDropLabel = nil
     pcall(function()
         cashDropLabel = FarmingTab:CreateLabel("Cash Drop: Disabled | Total: 0")
     end)
-    
+
     pcall(function()
         FarmingTab:CreateToggle({
             Name = "Auto Collect Cash Drops",
@@ -796,15 +766,15 @@ if FarmingTab then
             end,
         })
     end)
-    
+
     pcall(function()
         FarmingTab:CreateSection("Auto Wake Income")
     end)
-    
+
     local autoWakeEnabled = false
     local wakeTracked = {}
     local wakeSelectedStreams = {}
-    
+
     local function getManualStreamNames()
         local names = {}
         if streams then
@@ -819,12 +789,12 @@ if FarmingTab then
         table.sort(names)
         return names
     end
-    
+
     local function shouldWake(name)
         if next(wakeSelectedStreams) == nil then return true end
         return wakeSelectedStreams[name] == true
     end
-    
+
     local function startWakeLoop(entry)
         task.spawn(function()
             while autoWakeEnabled do
@@ -840,7 +810,7 @@ if FarmingTab then
             end
         end)
     end
-    
+
     local function startAllWakeLoops()
         wakeTracked = {}
         if streams then
@@ -860,16 +830,16 @@ if FarmingTab then
             end)
         end
     end
-    
+
     local wakeStatusLabel = nil
     pcall(function()
         wakeStatusLabel = FarmingTab:CreateLabel("Auto Wake: Disabled")
     end)
-    
+
     local manualStreamNames = getManualStreamNames()
     local streamDropdownOptions = { "All" }
     for _, n in ipairs(manualStreamNames) do table.insert(streamDropdownOptions, n) end
-    
+
     pcall(function()
         FarmingTab:CreateDropdown({
             Name = "Income to Wake",
@@ -892,7 +862,7 @@ if FarmingTab then
             end,
         })
     end)
-    
+
     pcall(function()
         FarmingTab:CreateToggle({
             Name = "Enable Auto Wake",
@@ -948,10 +918,7 @@ local function startRace()
     local success, raceData = pcall(function()
         return minigameStartRemote:InvokeServer()
     end)
-    
-    if success and raceData then
-        return raceData
-    end
+    if success and raceData then return raceData end
     return nil
 end
 
@@ -962,13 +929,10 @@ local function selectBall()
             local balls = {}
             for _, child in ipairs(raceSetup:GetChildren()) do
                 local prompt = child:FindFirstChildWhichIsA("ProximityPrompt", true)
-                if prompt then
-                    table.insert(balls, prompt)
-                end
+                if prompt then table.insert(balls, prompt) end
             end
             if #balls > 0 then
-                local randomPrompt = balls[math.random(1, #balls)]
-                fireproximityprompt(randomPrompt)
+                fireproximityprompt(balls[math.random(1, #balls)])
             end
         end
     end)
@@ -976,8 +940,8 @@ end
 
 local function cheerOnce()
     if not player or not player.Parent or not humanoid then return end
-    local UIS = game:GetService("UserInputService")
     pcall(function()
+        local UIS = game:GetService("UserInputService")
         UIS:SendKeyEvent(true, Enum.KeyCode.E, false)
         task.wait(0.05)
         UIS:SendKeyEvent(false, Enum.KeyCode.E, false)
@@ -990,7 +954,6 @@ local function endRace()
     local success, cashEarned = pcall(function()
         return minigameEndRemote:InvokeServer()
     end)
-    
     if success and cashEarned and cashEarned > 0 then
         minigamesWon = minigamesWon + 1
         return cashEarned
@@ -1010,29 +973,24 @@ local function minigameLoop()
     minigameThread = task.spawn(function()
         while autoMinigameEnabled do
             local availableTime = getRaceAvailableTime()
-            
             if availableTime <= 0 then
                 local raceData = startRace()
                 if raceData then
                     task.wait(0.5)
                     selectBall()
                     task.wait(0.5)
-                    
                     local cheerInterval = getCheerInterval()
                     local raceEndTime = getRaceEndTime()
                     local raceStartTick = tick()
-                    
                     while autoMinigameEnabled and (tick() - raceStartTick) < raceEndTime do
                         cheerOnce()
                         task.wait(cheerInterval)
                     end
-                    
                     task.wait(0.5)
                     local earned = endRace()
                     if earned > 0 then
                         Rayfield:Notify({ Title = "Race Won", Content = "Earned: $" .. earned, Duration = 1.5 })
                     end
-                    
                     while autoMinigameEnabled and getRaceAvailableTime() > 0 do
                         task.wait(0.5)
                     end
@@ -1051,12 +1009,12 @@ if MinigameTab then
         MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
         MinigameTab:CreateSection("Lemon Dash")
     end)
-    
+
     local minigameStatusLabel = nil
     pcall(function()
         minigameStatusLabel = MinigameTab:CreateLabel("Status: Disabled | Won: 0 | Cheered: 0")
     end)
-    
+
     pcall(function()
         MinigameTab:CreateToggle({
             Name = "Auto Win Races",
@@ -1068,15 +1026,12 @@ if MinigameTab then
                     minigameLoop()
                     Rayfield:Notify({ Title = "Auto Win", Content = "Lemon Dash auto win enabled!", Duration = 2 })
                 else
-                    if minigameThread then
-                        task.cancel(minigameThread)
-                        minigameThread = nil
-                    end
+                    if minigameThread then task.cancel(minigameThread) minigameThread = nil end
                 end
             end,
         })
     end)
-    
+
     pcall(function()
         MinigameTab:CreateSection("Other Minigames")
         MinigameTab:CreateButton({
@@ -1086,13 +1041,12 @@ if MinigameTab then
             end,
         })
     end)
-    
+
     RunService.Heartbeat:Connect(function()
         if minigameStatusLabel and autoMinigameEnabled then
             pcall(function()
                 local availableTime = getRaceAvailableTime()
                 local statusStr
-                
                 if availableTime > 0 then
                     local mins = math.floor(availableTime / 60)
                     local secs = math.floor(availableTime % 60)
@@ -1100,7 +1054,6 @@ if MinigameTab then
                 else
                     statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
                 end
-                
                 minigameStatusLabel:Set(statusStr)
             end)
         elseif minigameStatusLabel then
@@ -1115,10 +1068,10 @@ if MiscTab then
     pcall(function()
         MiscTab:CreateSection("Auto Friend Request")
     end)
-    
+
     local autoFriendEnabled = false
     local friendThread = nil
-    
+
     pcall(function()
         MiscTab:CreateToggle({
             Name = "Auto Friend Request Players",
@@ -1136,10 +1089,7 @@ if MiscTab then
                                     for _, targetPlayer in ipairs(Players:GetPlayers()) do
                                         if targetPlayer ~= localPlayer and autoFriendEnabled then
                                             local status = nil
-                                            pcall(function()
-                                                status = localPlayer:GetFriendStatus(targetPlayer)
-                                            end)
-                                            
+                                            pcall(function() status = localPlayer:GetFriendStatus(targetPlayer) end)
                                             if status == Enum.FriendStatus.NotFriend or status == Enum.FriendStatus.Unknown then
                                                 pcall(function()
                                                     localPlayer:RequestFriendship(targetPlayer)
@@ -1162,14 +1112,14 @@ if MiscTab then
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateSection("Settings - Movement")
     end)
-    
+
     local walkspeedEnabled = false
     local currentWalkspeed = 16
-    
+
     pcall(function()
         MiscTab:CreateSlider({
             Name = "Walkspeed",
@@ -1187,7 +1137,7 @@ if MiscTab then
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateToggle({
             Name = "Enable Fast Speed",
@@ -1196,24 +1146,20 @@ if MiscTab then
             Callback = function(value)
                 walkspeedEnabled = value
                 if value then
-                    if humanoid then
-                        humanoid.WalkSpeed = currentWalkspeed
-                    end
+                    if humanoid then humanoid.WalkSpeed = currentWalkspeed end
                     Rayfield:Notify({ Title = "Enabled", Content = "Fast speed enabled at " .. currentWalkspeed .. " speed", Duration = 1.5 })
                 else
-                    if humanoid then
-                        humanoid.WalkSpeed = 16
-                    end
+                    if humanoid then humanoid.WalkSpeed = 16 end
                     Rayfield:Notify({ Title = "Disabled", Content = "Fast speed disabled", Duration = 1.5 })
                 end
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateSection("Settings - Graphics")
     end)
-    
+
     pcall(function()
         MiscTab:CreateToggle({
             Name = "Save GPU",
@@ -1231,7 +1177,7 @@ if MiscTab then
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateToggle({
             Name = "Hide Lemon Trees",
@@ -1240,38 +1186,33 @@ if MiscTab then
             Callback = function(value)
                 local success = pcall(function()
                     for _, tree in ipairs(treeList) do
-                        if tree then
-                            sethiddenproperty(tree, "Hidden", value)
-                        end
+                        if tree then sethiddenproperty(tree, "Hidden", value) end
                     end
                 end)
                 if not success then
                     Rayfield:Notify({ Title = "Error", Content = "Executor does not support sethiddenproperty", Duration = 2 })
                 else
-                    local status = value and "hidden" or "visible"
-                    Rayfield:Notify({ Title = "Success", Content = "Lemon trees are now " .. status, Duration = 1.5 })
+                    Rayfield:Notify({ Title = "Success", Content = "Lemon trees are now " .. (value and "hidden" or "visible"), Duration = 1.5 })
                 end
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateSection("Settings - Workspace")
     end)
-    
+
     local function getTycoonList()
         local tycoons = {}
         pcall(function()
             for _, v in ipairs(Workspace:GetChildren()) do
-                if v.Name:match("^Tycoon%d+") then
-                    table.insert(tycoons, v.Name)
-                end
+                if v.Name:match("^Tycoon%d+") then table.insert(tycoons, v.Name) end
             end
         end)
         table.sort(tycoons)
         return tycoons
     end
-    
+
     local tycoonOptions = { "All But Ours", "All", "Our Tycoon" }
     local tycoonListData = getTycoonList()
     for _, tycoonName in ipairs(tycoonListData) do
@@ -1279,50 +1220,40 @@ if MiscTab then
         for _, opt in ipairs(tycoonOptions) do
             if opt == tycoonName then found = true break end
         end
-        if not found then
-            table.insert(tycoonOptions, tycoonName)
-        end
+        if not found then table.insert(tycoonOptions, tycoonName) end
     end
-    
+
     pcall(function()
         MiscTab:CreateDropdown({
             Name = "Tycoon Target",
             Options = tycoonOptions,
             CurrentOption = { "All But Ours" },
             Flag = "MiscTycoonTargetDropdown",
-            Callback = function(selected)
-            end,
+            Callback = function(selected) end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateButton({
             Name = "Destroy Tycoons",
             Callback = function()
                 local target = Window.Flags["MiscTycoonTargetDropdown"] or "All But Ours"
-                
                 if target == "Our Tycoon" then
                     pcall(function()
-                        if tycoonInstance then
-                            tycoonInstance:Destroy()
-                        end
+                        if tycoonInstance then tycoonInstance:Destroy() end
                         Rayfield:Notify({ Title = "Destroyed", Content = "Your tycoon has been destroyed", Duration = 2 })
                     end)
                 elseif target == "All" then
                     pcall(function()
                         for _, v in ipairs(Workspace:GetChildren()) do
-                            if v.Name:match("^Tycoon%d+") then
-                                v:Destroy()
-                            end
+                            if v.Name:match("^Tycoon%d+") then v:Destroy() end
                         end
                         Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons have been destroyed", Duration = 2 })
                     end)
                 elseif target == "All But Ours" then
                     pcall(function()
                         for _, v in ipairs(Workspace:GetChildren()) do
-                            if v.Name:match("^Tycoon%d+") and v ~= tycoonInstance then
-                                v:Destroy()
-                            end
+                            if v.Name:match("^Tycoon%d+") and v ~= tycoonInstance then v:Destroy() end
                         end
                         Rayfield:Notify({ Title = "Destroyed", Content = "All tycoons except yours have been destroyed", Duration = 2 })
                     end)
@@ -1340,7 +1271,7 @@ if MiscTab then
             end,
         })
     end)
-    
+
     pcall(function()
         MiscTab:CreateButton({
             Name = "Destroy NPCs",
@@ -1363,10 +1294,10 @@ if SewerTab then
     pcall(function()
         SewerTab:CreateSection("ESP Keys")
     end)
-    
+
     local espKeysEnabled = false
     local espKeysConnection = nil
-    
+
     local function createKeyESP(key)
         if not key or espKeysMap[key] then return end
         pcall(function()
@@ -1379,22 +1310,19 @@ if SewerTab then
             highlight.Adornee = key
             highlight.Parent = key
             espKeysMap[key] = highlight
-            print("Esped:", key:GetFullName())
         end)
     end
-    
+
     local function scanForKeys()
         pcall(function()
             local sewer = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Sewer")
             if not sewer then return end
             for _, obj in ipairs(sewer:GetDescendants()) do
-                if obj.Name:lower():find("key") and obj:IsA("Model") then
-                    createKeyESP(obj)
-                end
+                if obj.Name:lower():find("key") and obj:IsA("Model") then createKeyESP(obj) end
             end
         end)
     end
-    
+
     pcall(function()
         SewerTab:CreateToggle({
             Name = "ESP All Sewer Keys",
@@ -1415,9 +1343,7 @@ if SewerTab then
                 else
                     if espKeysConnection then pcall(function() espKeysConnection:Disconnect() end) espKeysConnection = nil end
                     for key, highlight in pairs(espKeysMap) do
-                        if highlight and highlight.Parent then
-                            pcall(function() highlight:Destroy() end)
-                        end
+                        if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
                     end
                     espKeysMap = {}
                     Rayfield:Notify({ Title = "Disabled", Content = "Key ESP disabled", Duration = 2 })
@@ -1425,14 +1351,14 @@ if SewerTab then
             end,
         })
     end)
-    
+
     pcall(function()
         SewerTab:CreateSection("ESP Levers")
     end)
-    
+
     local espLeversEnabled = false
     local espLeversConnection = nil
-    
+
     local function createLeverESP(lever)
         if not lever or espLeversMap[lever] then return end
         pcall(function()
@@ -1445,22 +1371,19 @@ if SewerTab then
             highlight.Adornee = lever
             highlight.Parent = lever
             espLeversMap[lever] = highlight
-            print("Esped Lever:", lever:GetFullName())
         end)
     end
-    
+
     local function scanForLevers()
         pcall(function()
             local sewer = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Sewer")
             if not sewer then return end
             for _, obj in ipairs(sewer:GetDescendants()) do
-                if obj.Name:lower():find("lever") and obj:IsA("Model") then
-                    createLeverESP(obj)
-                end
+                if obj.Name:lower():find("lever") and obj:IsA("Model") then createLeverESP(obj) end
             end
         end)
     end
-    
+
     pcall(function()
         SewerTab:CreateToggle({
             Name = "ESP All Sewer Levers",
@@ -1481,9 +1404,7 @@ if SewerTab then
                 else
                     if espLeversConnection then pcall(function() espLeversConnection:Disconnect() end) espLeversConnection = nil end
                     for lever, highlight in pairs(espLeversMap) do
-                        if highlight and highlight.Parent then
-                            pcall(function() highlight:Destroy() end)
-                        end
+                        if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
                     end
                     espLeversMap = {}
                     Rayfield:Notify({ Title = "Disabled", Content = "Lever ESP disabled", Duration = 2 })
@@ -1491,11 +1412,11 @@ if SewerTab then
             end,
         })
     end)
-    
+
     pcall(function()
         SewerTab:CreateSection("Noclip")
     end)
-    
+
     pcall(function()
         SewerTab:CreateToggle({
             Name = "Noclip",
@@ -1509,9 +1430,7 @@ if SewerTab then
                         if character and character.Parent then
                             pcall(function()
                                 for _, part in ipairs(character:GetDescendants()) do
-                                    if part:IsA("BasePart") then
-                                        part.CanCollide = false
-                                    end
+                                    if part:IsA("BasePart") then part.CanCollide = false end
                                 end
                             end)
                         end
@@ -1522,9 +1441,7 @@ if SewerTab then
                     pcall(function()
                         if character then
                             for _, part in ipairs(character:GetDescendants()) do
-                                if part:IsA("BasePart") then
-                                    part.CanCollide = true
-                                end
+                                if part:IsA("BasePart") then part.CanCollide = true end
                             end
                         end
                     end)
@@ -1533,11 +1450,11 @@ if SewerTab then
             end,
         })
     end)
-    
+
     pcall(function()
         SewerTab:CreateSection("Teleportation")
     end)
-    
+
     pcall(function()
         SewerTab:CreateButton({
             Name = "Teleport To UFO Key",
@@ -1553,23 +1470,21 @@ if SewerTab then
                     if ufoKey and hrp then
                         local targetCFrame = ufoKey:IsA("Model") and (ufoKey.PrimaryPart or ufoKey:FindFirstChildWhichIsA("BasePart")).CFrame or ufoKey.CFrame
                         hrp.CFrame = targetCFrame + Vector3.new(0, 5, 0)
-                        print("Teleported to UFO Key at:", ufoKey:GetFullName())
                         Rayfield:Notify({ Title = "Teleported", Content = "Moved to UFO Key", Duration = 2 })
                     else
                         Rayfield:Notify({ Title = "Error", Content = "UFO Key not found", Duration = 2 })
-                        print("ERROR: UFO Key not found in expected location")
                     end
                 end)
             end,
         })
     end)
-    
+
     pcall(function()
         SewerTab:CreateSection("Auto Teleport on Levers Complete")
     end)
-    
+
     local autoTeleportLeverEnabled = false
-    
+
     local function checkAllLeversComplete()
         local leverComplete = false
         pcall(function()
@@ -1590,12 +1505,11 @@ if SewerTab then
                     end
                 end
             end
-            print(string.format("[Sewer] Levers: %d/%d pulled", pulledCount, leverCount))
             leverComplete = (leverCount > 0 and pulledCount >= leverCount)
         end)
         return leverComplete
     end
-    
+
     pcall(function()
         SewerTab:CreateToggle({
             Name = "Auto Teleport When Levers Complete",
@@ -1618,7 +1532,6 @@ if SewerTab then
                                 if ufoKey and hrp then
                                     local targetCFrame = ufoKey:IsA("Model") and (ufoKey.PrimaryPart or ufoKey:FindFirstChildWhichIsA("BasePart")).CFrame or ufoKey.CFrame
                                     hrp.CFrame = targetCFrame + Vector3.new(0, 5, 0)
-                                    print("[Sewer] All levers complete! Teleporting to UFO Key")
                                     Rayfield:Notify({ Title = "Complete", Content = "All levers pulled! Teleported to UFO Key", Duration = 3 })
                                     autoTeleportLeverEnabled = false
                                     pcall(function() leverWatchConnection:Disconnect() end)
