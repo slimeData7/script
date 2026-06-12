@@ -126,31 +126,19 @@ local function manualSell()
     end
 end
 
--- Equip a tool from backpack, sell it via SellSingularItem, then unequip
 local function sellItemIfAbovePercent(itemId, minPercent)
     local pct = getStockPercent(itemId)
     if pct < minPercent then return false end
-
     local tool = player.Backpack:FindFirstChild(itemId)
     if not tool then return false end
-
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not humanoid then return false end
-
-    -- Equip the tool
     local ok = pcall(function() humanoid:EquipTool(tool) end)
     if not ok then return false end
-
-    task.wait(0.2) -- small wait for equip to register server-side
-
-    -- Fire SellSingularItem (server reads equipped tool)
+    task.wait(0.2)
     pcall(function() GetBridge("SellSingularItem"):Fire() end)
-
     task.wait(0.1)
-
-    -- Unequip
     pcall(function() humanoid:UnequipTools() end)
-
     return true
 end
 
@@ -159,26 +147,20 @@ local function performSmartSell(minPercent)
         return ClientData.playerProducer:getState().player.backpack
     end)
     if not ok or not backpack then return end
-
     local soldAny = false
     for itemId, itemData in pairs(backpack) do
         if itemData and itemData.amount and itemData.amount > 0 then
-            local sold = sellItemIfAbovePercent(itemId, minPercent)
-            if sold then
-                totalEarned = totalEarned + 1 -- approximate, exact value hard without per-item calc
-                lastItemBought = itemId
+            if sellItemIfAbovePercent(itemId, minPercent) then
                 soldAny = true
                 task.wait(0.3)
             end
         end
     end
-
-    pcall(function()
-        if totalEarnedLabel then totalEarnedLabel:Set("Total Earned: $" .. tostring(totalEarned)) end
-        if lastSaleLabel then lastSaleLabel:Set("Last Sale: smart sell") end
-    end)
-
     if soldAny then
+        pcall(function()
+            if totalEarnedLabel then totalEarnedLabel:Set("Total Earned: $" .. tostring(totalEarned)) end
+            if lastSaleLabel then lastSaleLabel:Set("Last Sale: smart sell") end
+        end)
         notifyUser("Smart Sell", "Sold items above " .. minPercent .. "%")
     end
 end
@@ -208,6 +190,17 @@ local function canAfford(price)
     local money = getPlayerMoney()
     if money == nil then return true end
     return money >= price
+end
+
+-- Send troops to a capture point using the correct bridge
+local function sendTroopsToPoint(capturePoint, armyIndex)
+    if not capturePoint then return end
+    pcall(function()
+        GetBridge("SendTroopsToPoint"):Fire({
+            armyIndex = armyIndex,
+            capturePoint = capturePoint,
+        })
+    end)
 end
 
 local CONFIG = {
@@ -478,12 +471,7 @@ local function smartFireConquer(capturePoint)
     if capturePoint == pendingTarget and tick() - pendingFiredAt < CONQUER_COOLDOWN then return end
     pendingTarget  = capturePoint
     pendingFiredAt = tick()
-    pcall(function()
-        dataRemoteEvent:FireServer({
-            { armyIndex = CONFIG.AutoConquer.ArmyIndex, capturePoint = capturePoint },
-            "U"
-        })
-    end)
+    sendTroopsToPoint(capturePoint, CONFIG.AutoConquer.ArmyIndex)
 end
 
 local function teleportToInstance(instance)
@@ -640,7 +628,6 @@ MainTab:CreateToggle({
     Flag = "AutoSellToggle",
     Callback = function(Value)
         CONFIG.AutoSell.Enabled = Value
-        -- Disable Smart Sell if Auto Sell is turned on
         if Value and CONFIG.SmartSell.Enabled then
             CONFIG.SmartSell.Enabled = false
             pcall(function() Rayfield.Flags.SmartSellToggle:Set(false) end)
@@ -662,7 +649,6 @@ MainTab:CreateToggle({
     Flag = "SmartSellToggle",
     Callback = function(Value)
         CONFIG.SmartSell.Enabled = Value
-        -- Disable Auto Sell All if Smart Sell is turned on
         if Value and CONFIG.AutoSell.Enabled then
             CONFIG.AutoSell.Enabled = false
             pcall(function() Rayfield.Flags.AutoSellToggle:Set(false) end)
@@ -1158,12 +1144,7 @@ task.spawn(function()
             task.wait(1)
         end
         if tick() - raidFiredAt >= CONQUER_COOLDOWN then
-            pcall(function()
-                dataRemoteEvent:FireServer({
-                    { armyIndex = CONFIG.AutoConquer.ArmyIndex, capturePoint = koth },
-                    "U"
-                })
-            end)
+            sendTroopsToPoint(koth, CONFIG.AutoConquer.ArmyIndex)
             raidFiredAt = tick()
         end
     end
@@ -1197,12 +1178,7 @@ task.spawn(function()
             task.wait(1)
         end
         if tick() - toxicRaidFiredAt >= CONQUER_COOLDOWN then
-            pcall(function()
-                dataRemoteEvent:FireServer({
-                    { armyIndex = CONFIG.AutoConquer.ArmyIndex, capturePoint = toxicKoth },
-                    "U"
-                })
-            end)
+            sendTroopsToPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
             toxicRaidFiredAt = tick()
         end
     end
