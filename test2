@@ -286,50 +286,42 @@ end
 local function getPurchaseStats()
 	local totalBought, totalItems = 0, 0
 	if not analyzer or not purchasesComp then return totalBought, totalItems end
-	pcall(function()
-		for name in pairs(analyzer:GetPurchases()) do
-			totalItems = totalItems + 1
-			if purchasesComp:IsPurchased(name) then totalBought = totalBought + 1 end
-		end
-	end)
+	for name in pairs(analyzer:GetPurchases()) do
+		totalItems = totalItems + 1
+		if purchasesComp:IsPurchased(name) then totalBought = totalBought + 1 end
+	end
 	return totalBought, totalItems
 end
 
 local function getAffordableItems(category)
 	local items = {}
 	if not analyzer or not purchasesComp or not balances then return items end
-	pcall(function()
-		local cash = balances:GetCash()
-		for name, purchase in pairs(analyzer:GetPurchases()) do
-			if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
-				local price = purchase:GetPrice()
-				if price and price <= cash then
-					local cat = getCategory(name)
-					if category == "All" or cat == category then
-						table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
-					end
+	local cash = balances:GetCash()
+	for name, purchase in pairs(analyzer:GetPurchases()) do
+		if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
+			local price = purchase:GetPrice()
+			if price and price <= cash then
+				local cat = getCategory(name)
+				if category == "All" or cat == category then
+					table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
 				end
 			end
 		end
-	end)
+	end
 	table.sort(items, function(a, b) return a.price < b.price end)
 	return items
 end
 
 local function buyItem(purchase)
-	pcall(function()
-		local remote = purchase.Instance:FindFirstChild("Purchase")
-		if not remote or not remote:IsA("RemoteFunction") then return end
-		remote:InvokeServer(false)
-	end)
+	local remote = purchase.Instance:FindFirstChild("Purchase")
+	if not remote or not remote:IsA("RemoteFunction") then return end
+	remote:InvokeServer(false)
 end
 
 local autoBuyEnabled  = false
 local currentCategory = "All"
 
 GameTab:CreateSection("Auto Buy")
-
-local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: 0 / 0")
 
 GameTab:CreateDropdown({
 	Name = "Category",
@@ -339,9 +331,6 @@ GameTab:CreateDropdown({
 	Flag = "CategoryDropdown",
 	Callback = function(selected)
 		currentCategory = type(selected) == "table" and selected[1] or selected
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 	end,
 })
 
@@ -351,9 +340,6 @@ featureToggle(GameTab, {
 	Flag = "AutoBuyToggle",
 	Callback = function(value)
 		autoBuyEnabled = value
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -364,9 +350,6 @@ featureToggle(GameTab, {
 					buyItem(affordable[1].purchaseObj)
 				end
 				task.wait(0.5)
-				local b2, t2 = 0, 0
-				pcall(function() b2, t2 = getPurchaseStats() end)
-				safeSet(buyStatusLabel, "Auto Buy: Enabled | Category: " .. currentCategory .. " | Bought: " .. b2 .. " / " .. t2)
 			end
 		end)
 	end,
@@ -375,16 +358,13 @@ featureToggle(GameTab, {
 featureButton(GameTab, {
 	Name = "Refresh Stats",
 	Callback = function()
-		local b, t = 0, 0
-		pcall(function() b, t = getPurchaseStats() end)
-		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
+		local b, t = getPurchaseStats()
 		rayfieldLibrary:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", b, t), Duration = 2 })
 	end,
 })
 
 GameTab:CreateSection("Auto Upgrade")
 
-local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0 | Affordable: 0")
 local totalUpgraded = 0
 
 GameTab:CreateDropdown({
@@ -408,8 +388,6 @@ featureToggle(GameTab, {
 	CurrentValue = false,
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
-		local stackDisplay = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
-		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded .. " | Affordable: 0")
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -420,21 +398,16 @@ featureToggle(GameTab, {
 				for _, earner in ipairs(earners) do
 					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
 					if not innerFlag or not innerFlag.CurrentValue then break end
-					local success = false
 					pcall(function()
 						if stackCount == math.huge then
 							earner.remote:InvokeServer(1e9)
 						else
 							earner.remote:InvokeServer(stackCount)
 						end
-						success = true
+						totalUpgraded = totalUpgraded + 1
 					end)
-					if success then totalUpgraded = totalUpgraded + 1 end
 					task.wait(0.1)
 				end
-				local stackDisplay2 = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
-				local affordableCount = #getUpgradeableEarners()
-				safeSet(upgradeStatusLabel, string.format("Auto Upgrade: Enabled | Stack: x%s | Upgraded: %d | Affordable: %d", stackDisplay2, totalUpgraded, affordableCount))
 				task.wait(0.5)
 			end
 		end)
@@ -465,8 +438,6 @@ local function handleOffer()
 	offerDebounce = false
 end
 
-local offerStatusLabel = GameTab:CreateLabel("Auto Offer: Disabled | Mode: Accept Any")
-
 GameTab:CreateDropdown({
 	Name = "Offer Mode",
 	Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
@@ -475,7 +446,6 @@ GameTab:CreateDropdown({
 	Flag = "GameTabOfferModeDropdown",
 	Callback = function(selected)
 		offerMode = type(selected) == "table" and selected[1] or selected
-		safeSet(offerStatusLabel, "Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 	end,
 })
 
@@ -485,7 +455,6 @@ featureToggle(GameTab, {
 	Flag = "AutoOfferToggle",
 	Callback = function(value)
 		autoOfferEnabled = value
-		safeSet(offerStatusLabel, "Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 		if offerConnection then pcall(function() offerConnection:Disconnect() end) offerConnection = nil end
 		if value and phoneOfferRemote then
 			offerConnection = phoneOfferRemote.OnClientEvent:Connect(function(v)
@@ -504,19 +473,15 @@ local sessionCashDrops       = 0
 
 local function getFruits(tree)
 	local fruits = {}
-	pcall(function()
-		for _, child in ipairs(tree:GetChildren()) do
-			if child.Name == "Fruit" then table.insert(fruits, child) end
-		end
-	end)
+	for _, child in ipairs(tree:GetChildren()) do
+		if child.Name == "Fruit" then table.insert(fruits, child) end
+	end
 	return fruits
 end
 
 local function teleportToTree(tree)
-	pcall(function()
-		local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
-		if part then hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0) task.wait(0.05) end
-	end)
+	local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
+	if part then hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0) task.wait(0.05) end
 end
 
 local function collectFruit(fruit)
@@ -542,14 +507,11 @@ end
 
 FarmingTab:CreateSection("Lemon Farming")
 
-local farmStatusLabel = FarmingTab:CreateLabel("Lemon Farming: Disabled | Collected: 0 | Touch: 0")
-
 featureToggle(FarmingTab, {
 	Name = "Auto Collect Lemons",
 	CurrentValue = false,
 	Flag = "AutoLemonToggle",
 	Callback = function(value)
-		safeSet(farmStatusLabel, "Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -566,7 +528,6 @@ featureToggle(FarmingTab, {
 					end
 				end
 				if not anyFruits then task.wait(0.5) end
-				safeSet(farmStatusLabel, "Lemon Farming: Enabled | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 			end
 		end)
 	end,
@@ -588,7 +549,6 @@ featureButton(FarmingTab, {
 
 FarmingTab:CreateSection("Cash Drops")
 
-local cashDropLabel      = FarmingTab:CreateLabel("Cash Drop: Disabled | Total: 0")
 local cashDropConnection = nil
 
 featureToggle(FarmingTab, {
@@ -596,7 +556,6 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "CashDropToggle",
 	Callback = function(value)
-		safeSet(cashDropLabel, "Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
 		if cashDropConnection then pcall(function() cashDropConnection:Disconnect() end) cashDropConnection = nil end
 		if value and newDropRemote then
 			cashDropConnection = newDropRemote.OnClientEvent:Connect(function(dropId)
@@ -606,7 +565,6 @@ featureToggle(FarmingTab, {
 				task.spawn(function()
 					pcall(function() redeemRemote:InvokeServer(dropId) end)
 					sessionCashDrops = sessionCashDrops + 1
-					safeSet(cashDropLabel, "Cash Drop: Enabled | Total: " .. sessionCashDrops)
 				end)
 			end)
 		end
@@ -621,11 +579,9 @@ local wakeSelectedStreams = {}
 local function getManualStreamNames()
 	local names = {}
 	if not streams then return names end
-	pcall(function()
-		for _, entry in streams:GetChildren() do
-			if not entry:GetAttribute("Automatic") then table.insert(names, entry.Name) end
-		end
-	end)
+	for _, entry in streams:GetChildren() do
+		if not entry:GetAttribute("Automatic") then table.insert(names, entry.Name) end
+	end
 	table.sort(names)
 	return names
 end
@@ -655,24 +611,21 @@ end
 local function startAllWakeLoops()
 	if not streams then return end
 	wakeTracked = {}
-	pcall(function()
-		for _, entry in streams:GetChildren() do
-			if not wakeTracked[entry.Name] then
-				wakeTracked[entry.Name] = true
-				startWakeLoop(entry)
-			end
+	for _, entry in streams:GetChildren() do
+		if not wakeTracked[entry.Name] then
+			wakeTracked[entry.Name] = true
+			startWakeLoop(entry)
 		end
-		streams.ChildAdded:Connect(function(entry)
-			local flag = rayfieldLibrary.Flags.AutoWakeToggle
-			if flag and flag.CurrentValue and not wakeTracked[entry.Name] then
-				wakeTracked[entry.Name] = true
-				startWakeLoop(entry)
-			end
-		end)
+	end
+	streams.ChildAdded:Connect(function(entry)
+		local flag = rayfieldLibrary.Flags.AutoWakeToggle
+		if flag and flag.CurrentValue and not wakeTracked[entry.Name] then
+			wakeTracked[entry.Name] = true
+			startWakeLoop(entry)
+		end
 	end)
 end
 
-local wakeStatusLabel       = FarmingTab:CreateLabel("Auto Wake: Disabled")
 local manualStreamNames     = getManualStreamNames()
 local streamDropdownOptions = { "All" }
 for _, n in ipairs(manualStreamNames) do table.insert(streamDropdownOptions, n) end
@@ -698,7 +651,6 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "AutoWakeToggle",
 	Callback = function(value)
-		safeSet(wakeStatusLabel, "Auto Wake: " .. (value and "Enabled" or "Disabled"))
 		if value then startAllWakeLoops() end
 	end,
 })
@@ -829,8 +781,6 @@ end
 MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
 MinigameTab:CreateSection("Lemon Dash")
 
-local minigameStatusLabel = MinigameTab:CreateLabel("Status: Disabled | Won: 0 | Cheered: 0")
-
 featureToggle(MinigameTab, {
 	Name = "Auto Win Races",
 	CurrentValue = false,
@@ -850,28 +800,6 @@ featureButton(MinigameTab, {
 	end,
 })
 
-task.spawn(function()
-	while true do
-		task.wait(1)
-		pcall(function()
-			local availableTime = getRaceAvailableTime()
-			local statusStr
-			if autoMinigameEnabled then
-				if availableTime > 0 then
-					local mins = math.floor(availableTime / 60)
-					local secs = math.floor(availableTime % 60)
-					statusStr = string.format("Status: Waiting %d:%02d | Won: %d | Cheered: %d", mins, secs, minigamesWon, timesCheered)
-				else
-					statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
-				end
-			else
-				statusStr = string.format("Status: Disabled | Won: %d | Cheered: %d", minigamesWon, timesCheered)
-			end
-			safeSet(minigameStatusLabel, statusStr)
-		end)
-	end
-end)
-
 MiscTab:CreateSection("Settings - Movement")
 
 local currentWalkspeed = 16
@@ -887,7 +815,7 @@ MiscTab:CreateSlider({
 		currentWalkspeed = value
 		local flag = rayfieldLibrary.Flags.MiscFastSpeedToggle
 		if flag and flag.CurrentValue then
-			pcall(function() humanoid.WalkSpeed = value end)
+			humanoid.WalkSpeed = value
 		end
 	end,
 })
@@ -898,10 +826,10 @@ featureToggle(MiscTab, {
 	Flag = "MiscFastSpeedToggle",
 	Callback = function(value)
 		if value then
-			pcall(function() humanoid.WalkSpeed = currentWalkspeed end)
+			humanoid.WalkSpeed = currentWalkspeed
 			rayfieldLibrary:Notify({ Title = "Enabled", Content = "Fast speed enabled at " .. currentWalkspeed .. " speed", Duration = 1.5 })
 		else
-			pcall(function() humanoid.WalkSpeed = 16 end)
+			humanoid.WalkSpeed = 16
 			rayfieldLibrary:Notify({ Title = "Disabled", Content = "Fast speed disabled", Duration = 1.5 })
 		end
 	end,
@@ -923,15 +851,13 @@ featureToggle(MiscTab, {
 	CurrentValue = false,
 	Flag = "MiscHideLemonTreesToggle",
 	Callback = function(value)
-		pcall(function()
-			for _, tree in ipairs(treeList) do
-				for _, part in ipairs(tree:GetDescendants()) do
-					if part:IsA("BasePart") then
-						part.LocalTransparencyModifier = value and 1 or 0
-					end
+		for _, tree in ipairs(treeList) do
+			for _, part in ipairs(tree:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.LocalTransparencyModifier = value and 1 or 0
 				end
 			end
-		end)
+		end
 		rayfieldLibrary:Notify({ Title = "Success", Content = "Lemon trees are now " .. (value and "hidden" or "visible"), Duration = 1.5 })
 	end,
 })
@@ -940,11 +866,9 @@ MiscTab:CreateSection("Settings - Workspace")
 
 local function getTycoonList()
 	local tycoons = {}
-	pcall(function()
-		for _, v in ipairs(workspace:GetChildren()) do
-			if v.Name:match("^Tycoon%d+") then table.insert(tycoons, v.Name) end
-		end
-	end)
+	for _, v in ipairs(workspace:GetChildren()) do
+		if v.Name:match("^Tycoon%d+") then table.insert(tycoons, v.Name) end
+	end
 	table.sort(tycoons)
 	return tycoons
 end
