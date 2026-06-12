@@ -118,6 +118,49 @@ local function manualSell()
     end
 end
 
+-- Returns current player money, or nil if unavailable
+local function getPlayerMoney()
+    local ok, money = pcall(function()
+        return ClientData.playerProducer:getState().player.money
+    end)
+    return ok and money or nil
+end
+
+-- Returns stock count for an item in a shop, or nil if unavailable
+local function getShopStock(shopName, itemName)
+    local ok, count = pcall(function()
+        local shopsStock = ClientData.playerProducer:getState().player.shopsStock
+        if not shopsStock then return nil end
+        local shopStock = shopsStock[shopName]
+        if not shopStock or not shopStock.stock then return nil end
+        return shopStock.stock[itemName]
+    end)
+    return ok and count or nil
+end
+
+local function isInStock(shopName, itemName)
+    local count = getShopStock(shopName, itemName)
+    if count == nil then return true end -- fail open
+    return count > 0
+end
+
+local function canAfford(price)
+    if not price or price <= 0 then return true end
+    local money = getPlayerMoney()
+    if money == nil then return true end -- fail open
+    return money >= price
+end
+
+-- Finds item config by name inside a shop's item list
+local function findItemConfig(items, itemName)
+    for _, item in ipairs(items) do
+        if item and item.name == itemName then
+            return item
+        end
+    end
+    return nil
+end
+
 local CONFIG = {
     Delay         = 1.5,
     BMCheckDelay  = 2,
@@ -594,9 +637,19 @@ ShopTab:CreateButton({
     Callback = function()
         if not blackMarketBridge then notifyUser("Error", "Bridge not available") return end
         if not isBlackMarketOpen() then notifyUser("Black Market", "Black Market is closed right now") return end
-        if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then notifyUser("Black Market", "Please select an item first") return end
+        if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then
+            notifyUser("Black Market", "Please select an item first") return
+        end
         for _, item in ipairs(ShopsConfig.BlackMarket or {}) do
             if item and item.name and shouldBuyItem(CONFIG.BlackMarket, item.name) then
+                if not isInStock("BlackMarket", item.name) then
+                    notifyUser("Black Market", item.name .. " is out of stock")
+                    continue
+                end
+                if not canAfford(item.Price or 0) then
+                    notifyUser("Black Market", "Can't afford " .. item.name)
+                    continue
+                end
                 pcall(function() blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name }) end)
                 recordPurchase(item.name)
                 notifyUser("Black Market", "Bought: " .. item.name)
@@ -646,9 +699,19 @@ for _, shopName in ipairs(shopNames) do
         Name = "Buy Selected " .. shopName .. " Items Now",
         Callback = function()
             if not shopBridge then notifyUser("Error", "Bridge not available") return end
-            if not CONFIG.Shops[shopName].SelectAll and #CONFIG.Shops[shopName].Selected == 0 then notifyUser(shopName, "Please select an item first") return end
+            if not CONFIG.Shops[shopName].SelectAll and #CONFIG.Shops[shopName].Selected == 0 then
+                notifyUser(shopName, "Please select an item first") return
+            end
             for _, item in ipairs(items) do
                 if item and item.name and shouldBuyItem(CONFIG.Shops[shopName], item.name) then
+                    if not isInStock(shopName, item.name) then
+                        notifyUser(shopName, item.name .. " is out of stock")
+                        continue
+                    end
+                    if not canAfford(item.Price or 0) then
+                        notifyUser(shopName, "Can't afford " .. item.name)
+                        continue
+                    end
                     pcall(function() shopBridge:Fire({ shop = shopName, item = item.name }) end)
                     recordPurchase(item.name)
                     notifyUser(shopName, "Bought: " .. item.name)
@@ -808,6 +871,7 @@ task.defer(function()
     end
 end)
 
+-- Auto Collect loop
 task.spawn(function()
     while true do
         task.wait(1.5)
@@ -827,6 +891,7 @@ task.spawn(function()
     end
 end)
 
+-- Auto Conquer loop
 task.spawn(function()
     while true do
         task.wait(2)
@@ -880,6 +945,7 @@ task.spawn(function()
     end
 end)
 
+-- Normal Raid loop
 task.spawn(function()
     local lastKoth    = nil
     local raidFiredAt = 0
@@ -918,6 +984,7 @@ task.spawn(function()
     end
 end)
 
+-- Toxic Raid loop
 task.spawn(function()
     local lastToxicKoth    = nil
     local toxicRaidFiredAt = 0
@@ -956,6 +1023,7 @@ task.spawn(function()
     end
 end)
 
+-- Auto Sell loop
 task.spawn(function()
     while true do
         task.wait(5)
@@ -965,6 +1033,53 @@ task.spawn(function()
     end
 end)
 
+-- Auto Buy Black Market loop
+task.spawn(function()
+    while true do
+        task.wait(CONFIG.BMCheckDelay)
+        if not CONFIG.BlackMarket.Enabled then continue end
+        if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then continue end
+        if not blackMarketBridge then continue end
+        if not isBlackMarketOpen() then continue end
+        for _, item in ipairs(ShopsConfig.BlackMarket or {}) do
+            if item and item.name and shouldBuyItem(CONFIG.BlackMarket, item.name) then
+                if not isInStock("BlackMarket", item.name) then continue end
+                if not canAfford(item.Price or 0) then continue end
+                pcall(function()
+                    blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name })
+                end)
+                recordPurchase(item.name)
+            end
+        end
+    end
+end)
+
+-- Auto Buy Shops loop
+task.spawn(function()
+    while true do
+        task.wait(CONFIG.Delay)
+        if not shopBridge then continue end
+        for _, shopName in ipairs(shopNames) do
+            local shopConfig = CONFIG.Shops[shopName]
+            if not shopConfig.Enabled then continue end
+            if not shopConfig.SelectAll and #shopConfig.Selected == 0 then continue end
+            local items = ShopsConfig[shopName]
+            if not items or type(items) ~= "table" then continue end
+            for _, item in ipairs(items) do
+                if item and item.name and shouldBuyItem(shopConfig, item.name) then
+                    if not isInStock(shopName, item.name) then continue end
+                    if not canAfford(item.Price or 0) then continue end
+                    pcall(function()
+                        shopBridge:Fire({ shop = shopName, item = item.name })
+                    end)
+                    recordPurchase(item.name)
+                end
+            end
+        end
+    end
+end)
+
+-- Run Speed loop
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -974,6 +1089,7 @@ task.spawn(function()
     end
 end)
 
+-- Character respawn handler
 player.CharacterAdded:Connect(function(newCharacter)
     character = newCharacter
     cachedHumanoid = nil
