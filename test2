@@ -174,14 +174,11 @@ end
 local function getUpgradeableEarners()
 	local earners = {}
 	if not tycoonInstance or not Balance or not upgradesComp or not balances then return earners end
-
 	local cash = 0
-	local success, cashVal = pcall(function() cash = balances:GetCash() end)
+	local success = pcall(function() cash = balances:GetCash() end)
 	if not success then return earners end
-
 	local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
 	if not purchasesFolder then return earners end
-
 	for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
 		local name = earnerFolder.Name
 		if Balance.UpgradePrices and Balance.UpgradePrices[name] then
@@ -207,7 +204,6 @@ local function getUpgradeableEarners()
 		end
 		::continue::
 	end
-
 	table.sort(earners, function(a, b) return a.nextPrice < b.nextPrice end)
 	return earners
 end
@@ -333,9 +329,7 @@ local currentCategory = "All"
 
 GameTab:CreateSection("Auto Buy")
 
-local totalBought, totalItems = 0, 0
-pcall(function() totalBought, totalItems = getPurchaseStats() end)
-local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
+local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: 0 / 0")
 
 GameTab:CreateDropdown({
 	Name = "Category",
@@ -621,8 +615,8 @@ featureToggle(FarmingTab, {
 
 FarmingTab:CreateSection("Auto Wake Income")
 
-local wakeTracked         = {}
-local wakeSelectedStreams  = {}
+local wakeTracked        = {}
+local wakeSelectedStreams = {}
 
 local function getManualStreamNames()
 	local names = {}
