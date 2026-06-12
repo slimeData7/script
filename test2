@@ -40,11 +40,6 @@ local mainWindow = rayfieldLibrary:CreateWindow({
 	KeySystem = false,
 })
 
-local function safeSet(label, text)
-	if not label then return end
-	pcall(function() label:Set(text) end)
-end
-
 local function featureToggle(tab, config)
 	local wrapped = {}
 	for k, v in pairs(config) do wrapped[k] = v end
@@ -174,11 +169,14 @@ end
 local function getUpgradeableEarners()
 	local earners = {}
 	if not tycoonInstance or not Balance or not upgradesComp or not balances then return earners end
+
 	local cash = 0
-	local success = pcall(function() cash = balances:GetCash() end)
+	local success, cashVal = pcall(function() cash = balances:GetCash() end)
 	if not success then return earners end
+
 	local purchasesFolder = tycoonInstance:FindFirstChild("Purchases")
 	if not purchasesFolder then return earners end
+
 	for _, earnerFolder in ipairs(purchasesFolder:GetChildren()) do
 		local name = earnerFolder.Name
 		if Balance.UpgradePrices and Balance.UpgradePrices[name] then
@@ -204,37 +202,17 @@ local function getUpgradeableEarners()
 		end
 		::continue::
 	end
+
 	table.sort(earners, function(a, b) return a.nextPrice < b.nextPrice end)
 	return earners
 end
 
 MainTab:CreateSection("System")
 
-local fpsValue  = "..."
-local pingValue = "..."
-local statusLabel = MainTab:CreateLabel("FPS: ... / PING: ...ms")
-
-pcall(function()
-	local frameCount = 0
-	local lastTime   = tick()
-	RunService.RenderStepped:Connect(function()
-		frameCount = frameCount + 1
-		local now = tick()
-		if now - lastTime >= 1 then
-			fpsValue   = math.floor(frameCount / (now - lastTime))
-			frameCount = 0
-			lastTime   = now
-			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
-		end
-	end)
-end)
-
 task.spawn(function()
 	while true do
 		pcall(function()
 			local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-			pingValue = math.floor(ping)
-			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
 		end)
 		task.wait(1)
 	end
@@ -286,36 +264,42 @@ end
 local function getPurchaseStats()
 	local totalBought, totalItems = 0, 0
 	if not analyzer or not purchasesComp then return totalBought, totalItems end
-	for name in pairs(analyzer:GetPurchases()) do
-		totalItems = totalItems + 1
-		if purchasesComp:IsPurchased(name) then totalBought = totalBought + 1 end
-	end
+	pcall(function()
+		for name in pairs(analyzer:GetPurchases()) do
+			totalItems = totalItems + 1
+			if purchasesComp:IsPurchased(name) then totalBought = totalBought + 1 end
+		end
+	end)
 	return totalBought, totalItems
 end
 
 local function getAffordableItems(category)
 	local items = {}
 	if not analyzer or not purchasesComp or not balances then return items end
-	local cash = balances:GetCash()
-	for name, purchase in pairs(analyzer:GetPurchases()) do
-		if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
-			local price = purchase:GetPrice()
-			if price and price <= cash then
-				local cat = getCategory(name)
-				if category == "All" or cat == category then
-					table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
+	pcall(function()
+		local cash = balances:GetCash()
+		for name, purchase in pairs(analyzer:GetPurchases()) do
+			if not purchasesComp:IsPurchased(name) and purchase:IsEnabled() then
+				local price = purchase:GetPrice()
+				if price and price <= cash then
+					local cat = getCategory(name)
+					if category == "All" or cat == category then
+						table.insert(items, { name = name, display = purchase.DisplayName or name, price = price, purchaseObj = purchase })
+					end
 				end
 			end
 		end
-	end
+	end)
 	table.sort(items, function(a, b) return a.price < b.price end)
 	return items
 end
 
 local function buyItem(purchase)
-	local remote = purchase.Instance:FindFirstChild("Purchase")
-	if not remote or not remote:IsA("RemoteFunction") then return end
-	remote:InvokeServer(false)
+	pcall(function()
+		local remote = purchase.Instance:FindFirstChild("Purchase")
+		if not remote or not remote:IsA("RemoteFunction") then return end
+		remote:InvokeServer(false)
+	end)
 end
 
 local autoBuyEnabled  = false
@@ -358,7 +342,8 @@ featureToggle(GameTab, {
 featureButton(GameTab, {
 	Name = "Refresh Stats",
 	Callback = function()
-		local b, t = getPurchaseStats()
+		local b, t = 0, 0
+		pcall(function() b, t = getPurchaseStats() end)
 		rayfieldLibrary:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", b, t), Duration = 2 })
 	end,
 })
@@ -398,14 +383,16 @@ featureToggle(GameTab, {
 				for _, earner in ipairs(earners) do
 					local innerFlag = rayfieldLibrary.Flags.AutoUpgradeToggle
 					if not innerFlag or not innerFlag.CurrentValue then break end
+					local success = false
 					pcall(function()
 						if stackCount == math.huge then
 							earner.remote:InvokeServer(1e9)
 						else
 							earner.remote:InvokeServer(stackCount)
 						end
-						totalUpgraded = totalUpgraded + 1
+						success = true
 					end)
+					if success then totalUpgraded = totalUpgraded + 1 end
 					task.wait(0.1)
 				end
 				task.wait(0.5)
@@ -467,41 +454,39 @@ featureToggle(GameTab, {
 	end,
 })
 
-local sessionLemonsCollected = 0
-local sessionFireTouchFired  = 0
-local sessionCashDrops       = 0
+local sessionCashDrops = 0
 
 local function getFruits(tree)
 	local fruits = {}
-	for _, child in ipairs(tree:GetChildren()) do
-		if child.Name == "Fruit" then table.insert(fruits, child) end
-	end
+	pcall(function()
+		for _, child in ipairs(tree:GetChildren()) do
+			if child.Name == "Fruit" then table.insert(fruits, child) end
+		end
+	end)
 	return fruits
 end
 
 local function teleportToTree(tree)
-	local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
-	if part then hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0) task.wait(0.05) end
+	pcall(function()
+		local part = tree.PrimaryPart or tree:FindFirstChildWhichIsA("BasePart")
+		if part then hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0) task.wait(0.05) end
+	end)
 end
 
 local function collectFruit(fruit)
 	local clickDetector = fruit:FindFirstChildWhichIsA("ClickDetector", true)
 	if clickDetector then
 		pcall(function() fireclickdetector(clickDetector) end)
-		sessionLemonsCollected = sessionLemonsCollected + 1
 		return
 	end
 	local prompt = fruit:FindFirstChildWhichIsA("ProximityPrompt", true)
 	if prompt then
 		pcall(function() fireproximityprompt(prompt) end)
-		sessionLemonsCollected = sessionLemonsCollected + 1
 		return
 	end
 	local part = fruit:IsA("BasePart") and fruit or fruit:FindFirstChildWhichIsA("BasePart")
 	if part then
 		pcall(function() firetouchinterest(hrp, part, 0) firetouchinterest(hrp, part, 1) end)
-		sessionFireTouchFired  = sessionFireTouchFired + 1
-		sessionLemonsCollected = sessionLemonsCollected + 1
 	end
 end
 
@@ -573,15 +558,17 @@ featureToggle(FarmingTab, {
 
 FarmingTab:CreateSection("Auto Wake Income")
 
-local wakeTracked        = {}
-local wakeSelectedStreams = {}
+local wakeTracked         = {}
+local wakeSelectedStreams  = {}
 
 local function getManualStreamNames()
 	local names = {}
 	if not streams then return names end
-	for _, entry in streams:GetChildren() do
-		if not entry:GetAttribute("Automatic") then table.insert(names, entry.Name) end
-	end
+	pcall(function()
+		for _, entry in streams:GetChildren() do
+			if not entry:GetAttribute("Automatic") then table.insert(names, entry.Name) end
+		end
+	end)
 	table.sort(names)
 	return names
 end
@@ -611,18 +598,20 @@ end
 local function startAllWakeLoops()
 	if not streams then return end
 	wakeTracked = {}
-	for _, entry in streams:GetChildren() do
-		if not wakeTracked[entry.Name] then
-			wakeTracked[entry.Name] = true
-			startWakeLoop(entry)
+	pcall(function()
+		for _, entry in streams:GetChildren() do
+			if not wakeTracked[entry.Name] then
+				wakeTracked[entry.Name] = true
+				startWakeLoop(entry)
+			end
 		end
-	end
-	streams.ChildAdded:Connect(function(entry)
-		local flag = rayfieldLibrary.Flags.AutoWakeToggle
-		if flag and flag.CurrentValue and not wakeTracked[entry.Name] then
-			wakeTracked[entry.Name] = true
-			startWakeLoop(entry)
-		end
+		streams.ChildAdded:Connect(function(entry)
+			local flag = rayfieldLibrary.Flags.AutoWakeToggle
+			if flag and flag.CurrentValue and not wakeTracked[entry.Name] then
+				wakeTracked[entry.Name] = true
+				startWakeLoop(entry)
+			end
+		end)
 	end)
 end
 
@@ -778,7 +767,6 @@ local function minigameLoop()
 	end)
 end
 
-MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
 MinigameTab:CreateSection("Lemon Dash")
 
 featureToggle(MinigameTab, {
@@ -815,7 +803,7 @@ MiscTab:CreateSlider({
 		currentWalkspeed = value
 		local flag = rayfieldLibrary.Flags.MiscFastSpeedToggle
 		if flag and flag.CurrentValue then
-			humanoid.WalkSpeed = value
+			pcall(function() humanoid.WalkSpeed = value end)
 		end
 	end,
 })
@@ -826,10 +814,10 @@ featureToggle(MiscTab, {
 	Flag = "MiscFastSpeedToggle",
 	Callback = function(value)
 		if value then
-			humanoid.WalkSpeed = currentWalkspeed
+			pcall(function() humanoid.WalkSpeed = currentWalkspeed end)
 			rayfieldLibrary:Notify({ Title = "Enabled", Content = "Fast speed enabled at " .. currentWalkspeed .. " speed", Duration = 1.5 })
 		else
-			humanoid.WalkSpeed = 16
+			pcall(function() humanoid.WalkSpeed = 16 end)
 			rayfieldLibrary:Notify({ Title = "Disabled", Content = "Fast speed disabled", Duration = 1.5 })
 		end
 	end,
@@ -851,13 +839,15 @@ featureToggle(MiscTab, {
 	CurrentValue = false,
 	Flag = "MiscHideLemonTreesToggle",
 	Callback = function(value)
-		for _, tree in ipairs(treeList) do
-			for _, part in ipairs(tree:GetDescendants()) do
-				if part:IsA("BasePart") then
-					part.LocalTransparencyModifier = value and 1 or 0
+		pcall(function()
+			for _, tree in ipairs(treeList) do
+				for _, part in ipairs(tree:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.LocalTransparencyModifier = value and 1 or 0
+					end
 				end
 			end
-		end
+		end)
 		rayfieldLibrary:Notify({ Title = "Success", Content = "Lemon trees are now " .. (value and "hidden" or "visible"), Duration = 1.5 })
 	end,
 })
@@ -866,9 +856,11 @@ MiscTab:CreateSection("Settings - Workspace")
 
 local function getTycoonList()
 	local tycoons = {}
-	for _, v in ipairs(workspace:GetChildren()) do
-		if v.Name:match("^Tycoon%d+") then table.insert(tycoons, v.Name) end
-	end
+	pcall(function()
+		for _, v in ipairs(workspace:GetChildren()) do
+			if v.Name:match("^Tycoon%d+") then table.insert(tycoons, v.Name) end
+		end
+	end)
 	table.sort(tycoons)
 	return tycoons
 end
