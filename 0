@@ -82,6 +82,14 @@ local function calcSellValue()
     return success and total or 0
 end
 
+local function getStockPercent(itemId)
+    local ok, pct = pcall(function()
+        local stock = ClientData.gameProducer:getState().market.stock
+        return math.round((stock[itemId] or 1) * 100)
+    end)
+    return ok and pct or 100
+end
+
 local function notifyUser(title, message)
     pcall(function()
         Rayfield:Notify({ Title = title, Content = message, Duration = 3, Image = "Bell" })
@@ -118,7 +126,63 @@ local function manualSell()
     end
 end
 
--- Returns current player money, or nil if unavailable
+-- Equip a tool from backpack, sell it via SellSingularItem, then unequip
+local function sellItemIfAbovePercent(itemId, minPercent)
+    local pct = getStockPercent(itemId)
+    if pct < minPercent then return false end
+
+    local tool = player.Backpack:FindFirstChild(itemId)
+    if not tool then return false end
+
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    -- Equip the tool
+    local ok = pcall(function() humanoid:EquipTool(tool) end)
+    if not ok then return false end
+
+    task.wait(0.2) -- small wait for equip to register server-side
+
+    -- Fire SellSingularItem (server reads equipped tool)
+    pcall(function() GetBridge("SellSingularItem"):Fire() end)
+
+    task.wait(0.1)
+
+    -- Unequip
+    pcall(function() humanoid:UnequipTools() end)
+
+    return true
+end
+
+local function performSmartSell(minPercent)
+    local ok, backpack = pcall(function()
+        return ClientData.playerProducer:getState().player.backpack
+    end)
+    if not ok or not backpack then return end
+
+    local soldAny = false
+    for itemId, itemData in pairs(backpack) do
+        if itemData and itemData.amount and itemData.amount > 0 then
+            local sold = sellItemIfAbovePercent(itemId, minPercent)
+            if sold then
+                totalEarned = totalEarned + 1 -- approximate, exact value hard without per-item calc
+                lastItemBought = itemId
+                soldAny = true
+                task.wait(0.3)
+            end
+        end
+    end
+
+    pcall(function()
+        if totalEarnedLabel then totalEarnedLabel:Set("Total Earned: $" .. tostring(totalEarned)) end
+        if lastSaleLabel then lastSaleLabel:Set("Last Sale: smart sell") end
+    end)
+
+    if soldAny then
+        notifyUser("Smart Sell", "Sold items above " .. minPercent .. "%")
+    end
+end
+
 local function getPlayerMoney()
     local ok, money = pcall(function()
         return ClientData.playerProducer:getState().player.money
@@ -126,8 +190,7 @@ local function getPlayerMoney()
     return ok and money or nil
 end
 
--- Returns stock count for an item in a shop, or nil if unavailable
-local function getShopStock(shopName, itemName)
+local function isInStock(shopName, itemName)
     local ok, count = pcall(function()
         local shopsStock = ClientData.playerProducer:getState().player.shopsStock
         if not shopsStock then return nil end
@@ -135,30 +198,16 @@ local function getShopStock(shopName, itemName)
         if not shopStock or not shopStock.stock then return nil end
         return shopStock.stock[itemName]
     end)
-    return ok and count or nil
-end
-
-local function isInStock(shopName, itemName)
-    local count = getShopStock(shopName, itemName)
-    if count == nil then return true end -- fail open
-    return count > 0
+    local count2 = ok and count or nil
+    if count2 == nil then return true end
+    return count2 > 0
 end
 
 local function canAfford(price)
     if not price or price <= 0 then return true end
     local money = getPlayerMoney()
-    if money == nil then return true end -- fail open
+    if money == nil then return true end
     return money >= price
-end
-
--- Finds item config by name inside a shop's item list
-local function findItemConfig(items, itemName)
-    for _, item in ipairs(items) do
-        if item and item.name == itemName then
-            return item
-        end
-    end
-    return nil
 end
 
 local CONFIG = {
@@ -173,6 +222,7 @@ local CONFIG = {
     AutoToxicRaid = { Enabled = false },
     SaveGpu       = { Enabled = false },
     AutoSell      = { Enabled = false },
+    SmartSell     = { Enabled = false, MinPercent = 30 },
     AntiAfk       = { Enabled = false },
 }
 
@@ -419,7 +469,6 @@ local function getGarnisonHP(garnisonInstance)
 end
 
 local CONQUER_COOLDOWN = 8
-
 local pendingTarget  = nil
 local pendingFiredAt = 0
 
@@ -468,6 +517,10 @@ local function updateRaidLabel()
         end
     end)
 end
+
+-- ============================================================
+-- UI
+-- ============================================================
 
 local Window = Rayfield:CreateWindow({
     Name = "Private Script",
@@ -582,18 +635,64 @@ totalEarnedLabel = MainTab:CreateLabel("Total Earned: $0")
 lastSaleLabel    = MainTab:CreateLabel("Last Sale: $0")
 
 MainTab:CreateToggle({
-    Name = "Auto Sell",
+    Name = "Auto Sell All",
     CurrentValue = CONFIG.AutoSell.Enabled,
     Flag = "AutoSellToggle",
     Callback = function(Value)
         CONFIG.AutoSell.Enabled = Value
+        -- Disable Smart Sell if Auto Sell is turned on
+        if Value and CONFIG.SmartSell.Enabled then
+            CONFIG.SmartSell.Enabled = false
+            pcall(function() Rayfield.Flags.SmartSellToggle:Set(false) end)
+            notifyUser("Sell", "Smart Sell disabled — Auto Sell All is active")
+        end
     end,
 })
 
 MainTab:CreateButton({
-    Name = "Sell Now",
+    Name = "Sell All Now",
     Callback = manualSell,
 })
+
+MainTab:CreateSection("Smart Sell (Per Item)")
+
+MainTab:CreateToggle({
+    Name = "Smart Sell (sell item when % reached)",
+    CurrentValue = CONFIG.SmartSell.Enabled,
+    Flag = "SmartSellToggle",
+    Callback = function(Value)
+        CONFIG.SmartSell.Enabled = Value
+        -- Disable Auto Sell All if Smart Sell is turned on
+        if Value and CONFIG.AutoSell.Enabled then
+            CONFIG.AutoSell.Enabled = false
+            pcall(function() Rayfield.Flags.AutoSellToggle:Set(false) end)
+            notifyUser("Sell", "Auto Sell All disabled — Smart Sell is active")
+        end
+    end,
+})
+
+MainTab:CreateSlider({
+    Name = "Min Stock % to Sell",
+    Range = {1, 100},
+    Increment = 1,
+    Suffix = "%",
+    CurrentValue = CONFIG.SmartSell.MinPercent,
+    Flag = "SmartSellPercent",
+    Callback = function(Value)
+        CONFIG.SmartSell.MinPercent = Value
+    end,
+})
+
+MainTab:CreateButton({
+    Name = "Smart Sell Now",
+    Callback = function()
+        performSmartSell(CONFIG.SmartSell.MinPercent)
+    end,
+})
+
+-- ============================================================
+-- Shop Tab
+-- ============================================================
 
 ShopTab:CreateSection("Stats")
 totalBoughtLabel = ShopTab:CreateLabel("Total Bought: 0")
@@ -653,6 +752,7 @@ ShopTab:CreateButton({
                 pcall(function() blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name }) end)
                 recordPurchase(item.name)
                 notifyUser("Black Market", "Bought: " .. item.name)
+                task.wait(0.2)
             end
         end
     end,
@@ -715,11 +815,16 @@ for _, shopName in ipairs(shopNames) do
                     pcall(function() shopBridge:Fire({ shop = shopName, item = item.name }) end)
                     recordPurchase(item.name)
                     notifyUser(shopName, "Bought: " .. item.name)
+                    task.wait(0.2)
                 end
             end
         end,
     })
 end
+
+-- ============================================================
+-- Features Tab
+-- ============================================================
 
 FeatureTab:CreateSection("Raid")
 
@@ -812,6 +917,10 @@ FeatureTab:CreateSlider({
     Callback = function(Value) CONFIG.AutoConquer.ArmyIndex = Value end,
 })
 
+-- ============================================================
+-- Quests Tab
+-- ============================================================
+
 QuestsTab:CreateSection("Active Quests")
 
 local questLabels = {}
@@ -858,6 +967,10 @@ task.spawn(function()
     end
 end)
 
+-- ============================================================
+-- Init
+-- ============================================================
+
 pcall(function() Rayfield:LoadConfiguration() end)
 loadDropdowns()
 
@@ -871,7 +984,11 @@ task.defer(function()
     end
 end)
 
--- Auto Collect loop
+-- ============================================================
+-- Background loops
+-- ============================================================
+
+-- Auto Collect
 task.spawn(function()
     while true do
         task.wait(1.5)
@@ -891,7 +1008,75 @@ task.spawn(function()
     end
 end)
 
--- Auto Conquer loop
+-- Auto Sell All
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if CONFIG.AutoSell.Enabled and not CONFIG.SmartSell.Enabled then
+            performAutoSell()
+        end
+    end
+end)
+
+-- Smart Sell
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if CONFIG.SmartSell.Enabled and not CONFIG.AutoSell.Enabled then
+            performSmartSell(CONFIG.SmartSell.MinPercent)
+        end
+    end
+end)
+
+-- Auto Buy Black Market
+task.spawn(function()
+    while true do
+        task.wait(CONFIG.BMCheckDelay)
+        if not CONFIG.BlackMarket.Enabled then continue end
+        if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then continue end
+        if not blackMarketBridge then continue end
+        if not isBlackMarketOpen() then continue end
+        for _, item in ipairs(ShopsConfig.BlackMarket or {}) do
+            if item and item.name and shouldBuyItem(CONFIG.BlackMarket, item.name) then
+                if not isInStock("BlackMarket", item.name) then continue end
+                if not canAfford(item.Price or 0) then continue end
+                pcall(function()
+                    blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name })
+                end)
+                recordPurchase(item.name)
+                task.wait(0.2)
+            end
+        end
+    end
+end)
+
+-- Auto Buy Shops
+task.spawn(function()
+    while true do
+        task.wait(CONFIG.Delay)
+        if not shopBridge then continue end
+        for _, shopName in ipairs(shopNames) do
+            local shopConfig = CONFIG.Shops[shopName]
+            if not shopConfig.Enabled then continue end
+            if not shopConfig.SelectAll and #shopConfig.Selected == 0 then continue end
+            local items = ShopsConfig[shopName]
+            if not items or type(items) ~= "table" then continue end
+            for _, item in ipairs(items) do
+                if item and item.name and shouldBuyItem(shopConfig, item.name) then
+                    if not isInStock(shopName, item.name) then continue end
+                    if not canAfford(item.Price or 0) then continue end
+                    pcall(function()
+                        shopBridge:Fire({ shop = shopName, item = item.name })
+                    end)
+                    recordPurchase(item.name)
+                    task.wait(0.2)
+                end
+            end
+        end
+    end
+end)
+
+-- Auto Conquer
 task.spawn(function()
     while true do
         task.wait(2)
@@ -945,7 +1130,7 @@ task.spawn(function()
     end
 end)
 
--- Normal Raid loop
+-- Normal Raid
 task.spawn(function()
     local lastKoth    = nil
     local raidFiredAt = 0
@@ -984,7 +1169,7 @@ task.spawn(function()
     end
 end)
 
--- Toxic Raid loop
+-- Toxic Raid
 task.spawn(function()
     local lastToxicKoth    = nil
     local toxicRaidFiredAt = 0
@@ -1023,63 +1208,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Sell loop
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if CONFIG.AutoSell.Enabled then
-            performAutoSell()
-        end
-    end
-end)
-
--- Auto Buy Black Market loop
-task.spawn(function()
-    while true do
-        task.wait(CONFIG.BMCheckDelay)
-        if not CONFIG.BlackMarket.Enabled then continue end
-        if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then continue end
-        if not blackMarketBridge then continue end
-        if not isBlackMarketOpen() then continue end
-        for _, item in ipairs(ShopsConfig.BlackMarket or {}) do
-            if item and item.name and shouldBuyItem(CONFIG.BlackMarket, item.name) then
-                if not isInStock("BlackMarket", item.name) then continue end
-                if not canAfford(item.Price or 0) then continue end
-                pcall(function()
-                    blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name })
-                end)
-                recordPurchase(item.name)
-            end
-        end
-    end
-end)
-
--- Auto Buy Shops loop
-task.spawn(function()
-    while true do
-        task.wait(CONFIG.Delay)
-        if not shopBridge then continue end
-        for _, shopName in ipairs(shopNames) do
-            local shopConfig = CONFIG.Shops[shopName]
-            if not shopConfig.Enabled then continue end
-            if not shopConfig.SelectAll and #shopConfig.Selected == 0 then continue end
-            local items = ShopsConfig[shopName]
-            if not items or type(items) ~= "table" then continue end
-            for _, item in ipairs(items) do
-                if item and item.name and shouldBuyItem(shopConfig, item.name) then
-                    if not isInStock(shopName, item.name) then continue end
-                    if not canAfford(item.Price or 0) then continue end
-                    pcall(function()
-                        shopBridge:Fire({ shop = shopName, item = item.name })
-                    end)
-                    recordPurchase(item.name)
-                end
-            end
-        end
-    end
-end)
-
--- Run Speed loop
+-- Run Speed
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -1089,7 +1218,7 @@ task.spawn(function()
     end
 end)
 
--- Character respawn handler
+-- Character respawn
 player.CharacterAdded:Connect(function(newCharacter)
     character = newCharacter
     cachedHumanoid = nil
