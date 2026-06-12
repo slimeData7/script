@@ -40,6 +40,11 @@ local mainWindow = rayfieldLibrary:CreateWindow({
 	KeySystem = false,
 })
 
+local function safeSet(label, text)
+	if not label then return end
+	pcall(function() label:Set(text) end)
+end
+
 local function featureToggle(tab, config)
 	local wrapped = {}
 	for k, v in pairs(config) do wrapped[k] = v end
@@ -209,10 +214,31 @@ end
 
 MainTab:CreateSection("System")
 
+local fpsValue  = "..."
+local pingValue = "..."
+local statusLabel = MainTab:CreateLabel("FPS: ... / PING: ...ms")
+
+pcall(function()
+	local frameCount = 0
+	local lastTime   = tick()
+	RunService.RenderStepped:Connect(function()
+		frameCount = frameCount + 1
+		local now = tick()
+		if now - lastTime >= 1 then
+			fpsValue   = math.floor(frameCount / (now - lastTime))
+			frameCount = 0
+			lastTime   = now
+			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
+		end
+	end)
+end)
+
 task.spawn(function()
 	while true do
 		pcall(function()
 			local ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+			pingValue = math.floor(ping)
+			safeSet(statusLabel, "FPS: " .. tostring(fpsValue) .. " / PING: " .. tostring(pingValue) .. "ms")
 		end)
 		task.wait(1)
 	end
@@ -307,6 +333,10 @@ local currentCategory = "All"
 
 GameTab:CreateSection("Auto Buy")
 
+local totalBought, totalItems = 0, 0
+pcall(function() totalBought, totalItems = getPurchaseStats() end)
+local buyStatusLabel = GameTab:CreateLabel("Auto Buy: Disabled | Category: All | Bought: " .. totalBought .. " / " .. totalItems)
+
 GameTab:CreateDropdown({
 	Name = "Category",
 	Options = getUniqueCategories(),
@@ -315,6 +345,9 @@ GameTab:CreateDropdown({
 	Flag = "CategoryDropdown",
 	Callback = function(selected)
 		currentCategory = type(selected) == "table" and selected[1] or selected
+		local b, t = 0, 0
+		pcall(function() b, t = getPurchaseStats() end)
+		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 	end,
 })
 
@@ -324,6 +357,9 @@ featureToggle(GameTab, {
 	Flag = "AutoBuyToggle",
 	Callback = function(value)
 		autoBuyEnabled = value
+		local b, t = 0, 0
+		pcall(function() b, t = getPurchaseStats() end)
+		safeSet(buyStatusLabel, "Auto Buy: " .. (value and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -334,6 +370,9 @@ featureToggle(GameTab, {
 					buyItem(affordable[1].purchaseObj)
 				end
 				task.wait(0.5)
+				local b2, t2 = 0, 0
+				pcall(function() b2, t2 = getPurchaseStats() end)
+				safeSet(buyStatusLabel, "Auto Buy: Enabled | Category: " .. currentCategory .. " | Bought: " .. b2 .. " / " .. t2)
 			end
 		end)
 	end,
@@ -344,12 +383,14 @@ featureButton(GameTab, {
 	Callback = function()
 		local b, t = 0, 0
 		pcall(function() b, t = getPurchaseStats() end)
+		safeSet(buyStatusLabel, "Auto Buy: " .. (autoBuyEnabled and "Enabled" or "Disabled") .. " | Category: " .. currentCategory .. " | Bought: " .. b .. " / " .. t)
 		rayfieldLibrary:Notify({ Title = "Stats Refreshed", Content = string.format("Bought: %d / %d", b, t), Duration = 2 })
 	end,
 })
 
 GameTab:CreateSection("Auto Upgrade")
 
+local upgradeStatusLabel = GameTab:CreateLabel("Auto Upgrade: Disabled | Stack: x1 | Upgraded: 0 | Affordable: 0")
 local totalUpgraded = 0
 
 GameTab:CreateDropdown({
@@ -373,6 +414,8 @@ featureToggle(GameTab, {
 	CurrentValue = false,
 	Flag = "AutoUpgradeToggle",
 	Callback = function(value)
+		local stackDisplay = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
+		safeSet(upgradeStatusLabel, "Auto Upgrade: " .. (value and "Enabled" or "Disabled") .. " | Stack: x" .. stackDisplay .. " | Upgraded: " .. totalUpgraded .. " | Affordable: 0")
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -395,6 +438,9 @@ featureToggle(GameTab, {
 					if success then totalUpgraded = totalUpgraded + 1 end
 					task.wait(0.1)
 				end
+				local stackDisplay2 = upgradeStackValue == math.huge and "inf" or tostring(upgradeStackValue)
+				local affordableCount = #getUpgradeableEarners()
+				safeSet(upgradeStatusLabel, string.format("Auto Upgrade: Enabled | Stack: x%s | Upgraded: %d | Affordable: %d", stackDisplay2, totalUpgraded, affordableCount))
 				task.wait(0.5)
 			end
 		end)
@@ -425,6 +471,8 @@ local function handleOffer()
 	offerDebounce = false
 end
 
+local offerStatusLabel = GameTab:CreateLabel("Auto Offer: Disabled | Mode: Accept Any")
+
 GameTab:CreateDropdown({
 	Name = "Offer Mode",
 	Options = { "Accept Any", "Raise x1", "Raise x2", "Raise x3" },
@@ -433,6 +481,7 @@ GameTab:CreateDropdown({
 	Flag = "GameTabOfferModeDropdown",
 	Callback = function(selected)
 		offerMode = type(selected) == "table" and selected[1] or selected
+		safeSet(offerStatusLabel, "Auto Offer: " .. (autoOfferEnabled and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 	end,
 })
 
@@ -442,6 +491,7 @@ featureToggle(GameTab, {
 	Flag = "AutoOfferToggle",
 	Callback = function(value)
 		autoOfferEnabled = value
+		safeSet(offerStatusLabel, "Auto Offer: " .. (value and "Enabled" or "Disabled") .. " | Mode: " .. offerMode)
 		if offerConnection then pcall(function() offerConnection:Disconnect() end) offerConnection = nil end
 		if value and phoneOfferRemote then
 			offerConnection = phoneOfferRemote.OnClientEvent:Connect(function(v)
@@ -454,7 +504,9 @@ featureToggle(GameTab, {
 	end,
 })
 
-local sessionCashDrops = 0
+local sessionLemonsCollected = 0
+local sessionFireTouchFired  = 0
+local sessionCashDrops       = 0
 
 local function getFruits(tree)
 	local fruits = {}
@@ -477,26 +529,33 @@ local function collectFruit(fruit)
 	local clickDetector = fruit:FindFirstChildWhichIsA("ClickDetector", true)
 	if clickDetector then
 		pcall(function() fireclickdetector(clickDetector) end)
+		sessionLemonsCollected = sessionLemonsCollected + 1
 		return
 	end
 	local prompt = fruit:FindFirstChildWhichIsA("ProximityPrompt", true)
 	if prompt then
 		pcall(function() fireproximityprompt(prompt) end)
+		sessionLemonsCollected = sessionLemonsCollected + 1
 		return
 	end
 	local part = fruit:IsA("BasePart") and fruit or fruit:FindFirstChildWhichIsA("BasePart")
 	if part then
 		pcall(function() firetouchinterest(hrp, part, 0) firetouchinterest(hrp, part, 1) end)
+		sessionFireTouchFired  = sessionFireTouchFired + 1
+		sessionLemonsCollected = sessionLemonsCollected + 1
 	end
 end
 
 FarmingTab:CreateSection("Lemon Farming")
+
+local farmStatusLabel = FarmingTab:CreateLabel("Lemon Farming: Disabled | Collected: 0 | Touch: 0")
 
 featureToggle(FarmingTab, {
 	Name = "Auto Collect Lemons",
 	CurrentValue = false,
 	Flag = "AutoLemonToggle",
 	Callback = function(value)
+		safeSet(farmStatusLabel, "Lemon Farming: " .. (value and "Enabled" or "Disabled") .. " | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 		if not value then return end
 		task.spawn(function()
 			while true do
@@ -513,6 +572,7 @@ featureToggle(FarmingTab, {
 					end
 				end
 				if not anyFruits then task.wait(0.5) end
+				safeSet(farmStatusLabel, "Lemon Farming: Enabled | Collected: " .. sessionLemonsCollected .. " | Touch: " .. sessionFireTouchFired)
 			end
 		end)
 	end,
@@ -534,6 +594,7 @@ featureButton(FarmingTab, {
 
 FarmingTab:CreateSection("Cash Drops")
 
+local cashDropLabel      = FarmingTab:CreateLabel("Cash Drop: Disabled | Total: 0")
 local cashDropConnection = nil
 
 featureToggle(FarmingTab, {
@@ -541,6 +602,7 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "CashDropToggle",
 	Callback = function(value)
+		safeSet(cashDropLabel, "Cash Drop: " .. (value and "Enabled" or "Disabled") .. " | Total: " .. sessionCashDrops)
 		if cashDropConnection then pcall(function() cashDropConnection:Disconnect() end) cashDropConnection = nil end
 		if value and newDropRemote then
 			cashDropConnection = newDropRemote.OnClientEvent:Connect(function(dropId)
@@ -550,6 +612,7 @@ featureToggle(FarmingTab, {
 				task.spawn(function()
 					pcall(function() redeemRemote:InvokeServer(dropId) end)
 					sessionCashDrops = sessionCashDrops + 1
+					safeSet(cashDropLabel, "Cash Drop: Enabled | Total: " .. sessionCashDrops)
 				end)
 			end)
 		end
@@ -615,6 +678,7 @@ local function startAllWakeLoops()
 	end)
 end
 
+local wakeStatusLabel       = FarmingTab:CreateLabel("Auto Wake: Disabled")
 local manualStreamNames     = getManualStreamNames()
 local streamDropdownOptions = { "All" }
 for _, n in ipairs(manualStreamNames) do table.insert(streamDropdownOptions, n) end
@@ -640,6 +704,7 @@ featureToggle(FarmingTab, {
 	CurrentValue = false,
 	Flag = "AutoWakeToggle",
 	Callback = function(value)
+		safeSet(wakeStatusLabel, "Auto Wake: " .. (value and "Enabled" or "Disabled"))
 		if value then startAllWakeLoops() end
 	end,
 })
@@ -767,7 +832,10 @@ local function minigameLoop()
 	end)
 end
 
+MinigameTab:CreateLabel("[ May not work - BETA TESTING ]")
 MinigameTab:CreateSection("Lemon Dash")
+
+local minigameStatusLabel = MinigameTab:CreateLabel("Status: Disabled | Won: 0 | Cheered: 0")
 
 featureToggle(MinigameTab, {
 	Name = "Auto Win Races",
@@ -787,6 +855,28 @@ featureButton(MinigameTab, {
 		rayfieldLibrary:Notify({ Title = "Coming Soon", Content = "Other minigames will be added soon", Duration = 2 })
 	end,
 })
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		pcall(function()
+			local availableTime = getRaceAvailableTime()
+			local statusStr
+			if autoMinigameEnabled then
+				if availableTime > 0 then
+					local mins = math.floor(availableTime / 60)
+					local secs = math.floor(availableTime % 60)
+					statusStr = string.format("Status: Waiting %d:%02d | Won: %d | Cheered: %d", mins, secs, minigamesWon, timesCheered)
+				else
+					statusStr = string.format("Status: Racing | Won: %d | Cheered: %d", minigamesWon, timesCheered)
+				end
+			else
+				statusStr = string.format("Status: Disabled | Won: %d | Cheered: %d", minigamesWon, timesCheered)
+			end
+			safeSet(minigameStatusLabel, statusStr)
+		end)
+	end
+end)
 
 MiscTab:CreateSection("Settings - Movement")
 
