@@ -214,6 +214,7 @@ task.spawn(function()
 		local settingsTab  = mainWindow:CreateTab("Settings", 120533439477016)
 		local statsTab     = mainWindow:CreateTab("Stats", 102533388850982)
 
+		-- FPS/Ping: use task.wait loop instead of RenderStepped to avoid per-frame overhead
 		local fpsValue = "..."
 		local pingValue = "..."
 		local statusLabel = mainTab:CreateLabel("FPS: ... / PING: ...ms")
@@ -279,7 +280,7 @@ task.spawn(function()
 		mainTab:CreateParagraph({ Title = "Enabled By Default", Content = "[+] Anti AFK" })
 		mainTab:CreateParagraph({
 			Title = "Latest Update",
-			Content = "[+] Auto Claim Login Streak Spins\n[+] Auto Consume Login Streak Spins\n[+] Wheel selector for spin consuming\n[+] Added Next Spin dashboard widget\n[+] Added Claimable Spin Countdown Timer\n[+] Added Next wheel to dashboard\n[+] Removed Minigame from Dashboard & Smoother UI\n[+] Added No (nonillion) support to dashboard\n[+] Bug Fixes"
+			Content = "[+] Auto Claim Daily Spin\n[+] Auto Consume Spin\n[+] Wheel selector ( spin specific wheel )\n[+] Added Next wheel to dashboard\n[+] Removed Minigame from Dashboard & Smoother UI\n[+] Added No ( nonillion ) support to dashboard\n[+] Added Next Spin dashboard\n[+] Claimable Spin Countdown Timer\n[+] Bug Fixes"
 		})
 
 		pcall(function()
@@ -326,10 +327,79 @@ task.spawn(function()
 		local upgradeServiceClient_new, dataServiceClient_new
 		local modulesLoaded = false
 
-		-- Login Streak module references (loaded after main modules)
-		local loginStreakRemote = nil
-		local loginStreakShared = nil
-		local loginStreakModulesLoaded = false
+		-- Streak/Spin variables
+		local RS = ReplicatedStorage
+		local streakRemote = nil
+		local streakShared = nil
+		local selectedWheel = "All"
+		local autoConsume = false
+		local autoClaim = false
+
+		task.spawn(function()
+			local ok2, err2 = pcall(function()
+				streakRemote = RS
+					:WaitForChild("Packages")
+					:WaitForChild("_Index")
+					:WaitForChild("leifstout_networker@0.3.1")
+					:WaitForChild("networker")
+					:WaitForChild("_remotes")
+					:WaitForChild("LoginStreakServiceServer")
+					:WaitForChild("RemoteFunction")
+				streakShared = require(RS.Source.Features.LoginStreak.LoginStreakShared)
+			end)
+			if not ok2 then
+				warn("[CactusHub] Streak modules failed: " .. tostring(err2))
+			end
+		end)
+
+		local function getStreakData()
+			if not dataServiceClient then return nil end
+			return dataServiceClient:get("streakData")
+		end
+
+		local function getAvailableSpinIds()
+			local data = getStreakData()
+			if not data or not data.spins then return {} end
+			local ids = {}
+			for spinId, count in pairs(data.spins) do
+				if tonumber(spinId) and count > 0 then
+					table.insert(ids, spinId)
+				end
+			end
+			return ids
+		end
+
+		task.spawn(function()
+			while true do
+				task.wait(1)
+				pcall(function()
+					if not streakRemote or not streakShared then return end
+
+					if autoClaim then
+						local data = getStreakData()
+						if data then
+							local now = math.round(workspace:GetServerTimeNow())
+							if now >= (data.lastSpinClaimTime or 0) + streakShared.STREAK_CADENCE then
+								streakRemote:InvokeServer("tryClaimingSpin", data.currentStreak)
+								task.wait(2)
+							end
+						end
+					end
+
+					if autoConsume then
+						local ids = getAvailableSpinIds()
+						for _, spinId in ipairs(ids) do
+							local idx = tonumber(spinId)
+							local wheel = streakShared.WHEELS[idx]
+							if selectedWheel == "All" or (wheel and wheel.mat == selectedWheel) then
+								streakRemote:InvokeServer("tryConsumingSpin", spinId)
+								task.wait(1)
+							end
+						end
+					end
+				end)
+			end
+		end)
 
 		task.spawn(function()
 			Logger:info("CactusHub", "ModuleLoad", "Starting module initialization...")
@@ -415,24 +485,6 @@ task.spawn(function()
 						upgradeServiceClient_new = upgradeClientInstance
 					end)
 				end)
-
-				-- Load Login Streak modules
-				task.spawn(function()
-					pcall(function()
-						local remotesF = packages:WaitForChild("_Index", 15)
-							:WaitForChild("leifstout_networker@0.3.1", 15)
-							:WaitForChild("networker", 15)
-							:WaitForChild("_remotes", 15)
-						local lsFolder = remotesF:WaitForChild("LoginStreakServiceServer", 10)
-						if lsFolder then
-							loginStreakRemote = lsFolder:WaitForChild("RemoteFunction", 10)
-						end
-						loginStreakShared = require(sourceFolder.Features.LoginStreak.LoginStreakShared)
-						loginStreakModulesLoaded = true
-						Logger:info("CactusHub", "ModuleLoad", "Login Streak modules loaded!")
-					end)
-				end)
-
 				modulesLoaded = true
 				Logger:info("CactusHub", "ModuleLoad", "All modules loaded successfully!")
 				rayfieldLibrary:Notify({ Title = "Cactus Hub", Content = "All modules loaded! Features are ready.", Duration = 4 })
@@ -871,6 +923,7 @@ task.spawn(function()
 			return bestEnemy, bestId
 		end
 
+		-- Auto-farm: throttled task.wait loop instead of every-frame Heartbeat
 		local lastBoundaryRefresh = 0
 		local autoFarmThread = nil
 
@@ -1003,6 +1056,7 @@ task.spawn(function()
 
 		local DiceLuckLabel = farmingTab:CreateLabel("Total Stacked: x0")
 
+		-- Dice stack loop: run every 1s instead of 0.5s, cache unlocked/progression lookups
 		task.spawn(function()
 			while true do
 				task.wait(1)
@@ -1118,177 +1172,50 @@ task.spawn(function()
 			end
 		end)
 
-		-- =============================================
-		-- LOGIN STREAK SPINS SECTION
-		-- =============================================
-		farmingTab:CreateSection("Login Streak Spins")
-
-		local selectedWheel = "All"
-		local autoConsumeSpin = false
-		local autoClaimSpin = false
-
-		local function getStreakData()
-			if not dataServiceClient then return nil end
-			return dataServiceClient:get("streakData")
-		end
-
-		local function getAvailableSpinIds()
-			local data = getStreakData()
-			if not data or not data.spins then return {} end
-			local ids = {}
-			for spinId, count in pairs(data.spins) do
-				if tonumber(spinId) and count > 0 then
-					table.insert(ids, spinId)
-				end
-			end
-			return ids
-		end
-
-		local spinCountdownLabel = farmingTab:CreateLabel("⏳ Next Spin: Loading...")
-		local spinAvailableLabel = farmingTab:CreateLabel("🎡 Available Spins: Loading...")
-
-		-- Countdown + spin status updater
-		task.spawn(function()
-			while true do
-				task.wait(1)
-				pcall(function()
-					if not loginStreakModulesLoaded or not loginStreakShared then
-						spinCountdownLabel:Set("⏳ Next Spin: Waiting for modules...")
-						spinAvailableLabel:Set("🎡 Available Spins: Waiting for modules...")
-						return
-					end
-					local data = getStreakData()
-					if not data then
-						spinCountdownLabel:Set("⏳ Next Spin: No data")
-						spinAvailableLabel:Set("🎡 Available Spins: No data")
-						return
-					end
-					local now = math.round(workspace:GetServerTimeNow())
-					local lastClaim = data.lastSpinClaimTime or 0
-					local cadence = loginStreakShared.STREAK_CADENCE or 86400
-					local nextAt = lastClaim + cadence
-					local remaining = nextAt - now
-					if remaining <= 0 then
-						spinCountdownLabel:Set("⏳ Next Spin: CLAIMABLE NOW!")
-					else
-						local h = math.floor(remaining / 3600)
-						local m = math.floor((remaining % 3600) / 60)
-						local s = math.floor(remaining % 60)
-						spinCountdownLabel:Set(string.format("⏳ Next Spin: %dh %dm %ds", h, m, s))
-					end
-					local spins = data.spins or {}
-					local total = 0
-					for _, count in pairs(spins) do
-						if type(count) == "number" then total = total + count end
-					end
-					spinAvailableLabel:Set("🎡 Available Spins: " .. total)
-				end)
-			end
-		end)
-
-		local wheelOptions = {"All"}
-		-- populate wheel options once modules load
-		task.spawn(function()
-			repeat task.wait(1) until loginStreakModulesLoaded and loginStreakShared
-			pcall(function()
-				if loginStreakShared.WHEELS then
-					for _, wheel in ipairs(loginStreakShared.WHEELS) do
-						if wheel.mat and not table.find(wheelOptions, wheel.mat) then
-							table.insert(wheelOptions, wheel.mat)
-						end
-					end
-				end
-			end)
-		end)
+		-- ── Streak / Spin Section ──────────────────────────────────────────
+		farmingTab:CreateSection("Daily Spin")
 
 		farmingTab:CreateDropdown({
 			Name = "Wheel to Spin",
-			Options = wheelOptions,
+			Options = {"All"},
 			CurrentOption = {"All"},
 			MultipleOptions = false,
-			Flag = "LoginStreakWheelDropdown",
+			Flag = "WheelDropdown",
 			Callback = function(option)
-				selectedWheel = type(option) == "table" and (option[1] or "All") or option
+				selectedWheel = option[1] or "All"
 			end,
 		})
+
+		task.spawn(function()
+			repeat task.wait(1) until streakShared ~= nil
+			local wheelOptions = {"All"}
+			for _, wheel in ipairs(streakShared.WHEELS) do
+				table.insert(wheelOptions, wheel.mat)
+			end
+			local dd = rayfieldLibrary.Flags.WheelDropdown
+			if dd then
+				pcall(function() dd:Refresh(wheelOptions, {"All"}) end)
+			end
+		end)
 
 		featureToggle(farmingTab, {
 			Name = "Auto Consume Spin",
 			CurrentValue = false,
-			Flag = "LoginStreakAutoConsume",
+			Flag = "AutoConsumeSpin",
 			Callback = function(val)
-				autoConsumeSpin = val
+				autoConsume = val
 			end,
 		})
 
 		featureToggle(farmingTab, {
 			Name = "Auto Claim Spins",
 			CurrentValue = false,
-			Flag = "LoginStreakAutoClaim",
+			Flag = "AutoClaimSpin",
 			Callback = function(val)
-				autoClaimSpin = val
+				autoClaim = val
 			end,
 		})
-
-		featureButton(farmingTab, {
-			Name = "Claim Spin Now",
-			Callback = function()
-				if not loginStreakModulesLoaded or not loginStreakRemote then
-					rayfieldLibrary:Notify({ Title = "Login Streak", Content = "Modules not loaded yet.", Duration = 3 })
-					return
-				end
-				local data = getStreakData()
-				if not data then
-					rayfieldLibrary:Notify({ Title = "Login Streak", Content = "No streak data found.", Duration = 3 })
-					return
-				end
-				local ok, result = pcall(function()
-					return loginStreakRemote:InvokeServer("tryClaimingSpin", data.currentStreak)
-				end)
-				if ok then
-					rayfieldLibrary:Notify({ Title = "Login Streak", Content = "Claim attempted!", Duration = 3 })
-				else
-					rayfieldLibrary:Notify({ Title = "Login Streak", Content = "Failed: " .. tostring(result):sub(1,80), Duration = 4 })
-				end
-			end,
-		})
-
-		-- Auto claim/consume loop
-		task.spawn(function()
-			while true do
-				task.wait(1)
-				pcall(function()
-					if not loginStreakModulesLoaded or not loginStreakShared or not loginStreakRemote then return end
-
-					if autoClaimSpin then
-						local data = getStreakData()
-						if data then
-							local now = math.round(workspace:GetServerTimeNow())
-							local cadence = loginStreakShared.STREAK_CADENCE or 86400
-							if now >= (data.lastSpinClaimTime or 0) + cadence then
-								loginStreakRemote:InvokeServer("tryClaimingSpin", data.currentStreak)
-								task.wait(2)
-							end
-						end
-					end
-
-					if autoConsumeSpin then
-						local ids = getAvailableSpinIds()
-						for _, spinId in ipairs(ids) do
-							local idx = tonumber(spinId)
-							local wheel = loginStreakShared.WHEELS and loginStreakShared.WHEELS[idx]
-							if selectedWheel == "All" or (wheel and wheel.mat == selectedWheel) then
-								loginStreakRemote:InvokeServer("tryConsumingSpin", spinId)
-								task.wait(1)
-							end
-						end
-					end
-				end)
-			end
-		end)
-		-- =============================================
-		-- END LOGIN STREAK SPINS SECTION
-		-- =============================================
+		-- ──────────────────────────────────────────────────────────────────
 
 		farmingTab:CreateSection("Zones")
 
@@ -1574,6 +1501,8 @@ task.spawn(function()
 		local cachedGunController = nil
 		local cachedGunTool = nil
 
+		-- findGunController: avoid getgc(true) on every combat tick by caching the result
+		-- only re-scan when the tool instance changes
 		local function findGunController()
 			local char = localPlayer.Character
 			if not char then cachedGunController = nil cachedGunTool = nil return nil end
@@ -1800,11 +1729,11 @@ task.spawn(function()
 			Name = "Equip Best Slimes Now",
 			Callback = function()
 				if not inventoryServiceRemote then
-					rayfieldLibrary:Notify({ Title = "Equip Best", Content = "InventoryService not loaded.", Duration = 3 })
+					rayfieldLibrary:Notify({ Title = "Equip Best", Content = "InventoryService not loaded yet.", Duration = 3 })
 					return
 				end
 				pcall(function() inventoryServiceRemote:InvokeServer("requestEquipBest") end)
-				rayfieldLibrary:Notify({ Title = "Equip Best", Content = "Equipped best slimes!", Duration = 3 })
+				rayfieldLibrary:Notify({ Title = "Equip Best", Content = "Requested equip best!", Duration = 3 })
 			end,
 		})
 
@@ -2431,6 +2360,7 @@ task.spawn(function()
 			indexProgressLabels[catId] = indexTab:CreateLabel(string.format("📊 %s: %d / %d", label, getUnlockedCount(catId), totalSlimeCount))
 		end
 
+		-- Index progress: update every 10s instead of 2s (slow-changing data)
 		task.spawn(function()
 			while true do
 				task.wait(10)
@@ -2639,7 +2569,7 @@ task.spawn(function()
 								end
 							end)
 							if not diceOk then
-								rayfieldLibrary:Notify({ Title = "Auto Use Dice", Content = "Error: " .. tostring(diceErr):sub(1,80), Duration = 4 })
+								rayfieldLibrary:Notify({ Title = "Auto Use Dice", Content = "Error: " .. tostring(diceOk):sub(1,80), Duration = 4 })
 							end
 							task.wait(1)
 						end
@@ -2773,6 +2703,7 @@ task.spawn(function()
 			return not unlocked[slimeId]
 		end
 
+		-- recentWebhookNotifications: clear periodically to prevent unbounded memory growth
 		local recentWebhookNotifications = {}
 		task.spawn(function()
 			while true do
@@ -2990,7 +2921,9 @@ task.spawn(function()
 					if zonesFolder then
 						for _, zoneFolder in ipairs(zonesFolder:GetChildren()) do
 							local decorFolder = zoneFolder:FindFirstChild("decor")
-							if decorFolder then decorFolder:Destroy() end
+							if decorFolder then
+								decorFolder:Destroy()
+							end
 						end
 					end
 				end)
@@ -3026,7 +2959,9 @@ task.spawn(function()
 					if zonesFolder then
 						for _, zoneFolder in ipairs(zonesFolder:GetChildren()) do
 							local decorFolder = zoneFolder:FindFirstChild("decor")
-							if decorFolder then decorFolder:Destroy() end
+							if decorFolder then
+								decorFolder:Destroy()
+							end
 						end
 					end
 				end)
@@ -3207,6 +3142,7 @@ task.spawn(function()
 		lbl("inv",      "Total Slimes: --  |  Species: --  |  Crafting: --")
 		lbl("equipped", "Equipped: --")
 
+		-- Stats tab: update every 5s instead of 2s to reduce expensive safeGet traversals
 		task.spawn(function()
 			while true do
 				task.wait(5)
