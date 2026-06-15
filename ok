@@ -21,6 +21,54 @@ local replica = PlayerStateClient:WaitForLocalReplica(30)
 local GUIDS_CLAIMED = {}
 local ICON_CACHE = {}
 
+-- Build config lookups once
+local petCfg = CFG.AUTO_EQUIP_PETS
+local blacklistSet = {}
+local priorityRank = {}
+if petCfg then
+	for _, name in ipairs(petCfg.BLACKLIST or {}) do
+		blacklistSet[name] = true
+	end
+	for i, name in ipairs(petCfg.PRIORITY or {}) do
+		priorityRank[name] = i
+	end
+end
+
+-- Equipped pet cache kept in sync via server events
+local equippedCache = {}
+
+Networking.Pets.PetEquipped.OnClientEvent:Connect(function(guid, petData)
+	if type(guid) ~= "string" then return end
+	equippedCache[guid] = {
+		Id   = (type(petData) == "table" and petData.Id)   or guid,
+		Name = (type(petData) == "table" and petData.Name) or "Pet",
+	}
+	task.spawn(function()
+		local cfg = CFG.AUTO_EQUIP_PETS
+		if cfg and cfg.ENABLED then syncPets() end
+	end)
+end)
+
+Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(guid)
+	if type(guid) == "string" then
+		equippedCache[guid] = nil
+	end
+end)
+
+local function refreshEquippedCache()
+	local ok, result = pcall(function()
+		return Networking.Pets.GetEquippedPets:Fire()
+	end)
+	if ok and type(result) == "table" then
+		equippedCache = {}
+		for _, pet in ipairs(result) do
+			if type(pet) == "table" and type(pet.Id) == "string" then
+				equippedCache[pet.Id] = pet
+			end
+		end
+	end
+end
+
 local StockValues = ReplicatedStorage:WaitForChild("StockValues")
 local SeedShopItems = StockValues:WaitForChild("SeedShop"):WaitForChild("Items")
 local GearShopItems = StockValues:WaitForChild("GearShop"):WaitForChild("Items")
@@ -246,23 +294,7 @@ local function getOwnedPets()
 	local data = replica and replica.Data and replica.Data.Pets
 	if not data then return pets end
 	for guid, petInfo in pairs(data) do
-		table.insert(pets, { Guid = guid, Name = petInfo.Name or petInfo.DisplayName })
-	end
-	return pets
-end
-
-local function getEquippedPets()
-	local pets = {}
-	local char = LocalPlayer.Character
-	if not char then return pets end
-	for _, tool in pairs(char:GetChildren()) do
-		if tool:IsA("Tool") then
-			local guid = tool:GetAttribute("PetId") or tool:GetAttribute("UUID") or tool:GetAttribute("Guid")
-			local name = tool:GetAttribute("PetName") or tool.Name
-			if guid then
-				table.insert(pets, { Guid = guid, Name = name })
-			end
-		end
+		table.insert(pets, { Id = guid, Name = petInfo.Name or petInfo.DisplayName })
 	end
 	return pets
 end
@@ -271,65 +303,45 @@ local function getDesiredPets()
 	local cfg = CFG.AUTO_EQUIP_PETS
 	local maxSlots = LocalPlayer:GetAttribute("MaxEquippedPets") or 1
 
-	local blacklistSet = {}
-	for _, name in ipairs(cfg.BLACKLIST or {}) do
-		blacklistSet[name] = true
-	end
-
-	local priorityRank = {}
-	for i, name in ipairs(cfg.PRIORITY or {}) do
-		priorityRank[name] = i
-	end
-
-	local owned = getOwnedPets()
-
-	local eligible = {}
-	for _, pet in ipairs(owned) do
-		if not blacklistSet[pet.Name] then
-			table.insert(eligible, pet)
+	-- Only equip pets explicitly listed in PRIORITY, in order, up to maxSlots
+	local ownedByName = {}
+	for _, pet in ipairs(getOwnedPets()) do
+		if not ownedByName[pet.Name] then
+			ownedByName[pet.Name] = pet
 		end
 	end
 
-	table.sort(eligible, function(a, b)
-		local ra = priorityRank[a.Name] or math.huge
-		local rb = priorityRank[b.Name] or math.huge
-		return ra < rb
-	end)
-
 	local desired = {}
-	for i = 1, math.min(maxSlots, #eligible) do
-		table.insert(desired, eligible[i])
+	for _, name in ipairs(cfg.PRIORITY or {}) do
+		if #desired >= maxSlots then break end
+		if not blacklistSet[name] and ownedByName[name] then
+			table.insert(desired, ownedByName[name])
+		end
 	end
 
 	return desired
 end
 
-local function syncPets()
+function syncPets()
 	local cfg = CFG.AUTO_EQUIP_PETS
 	if not cfg or not cfg.ENABLED then return end
 
 	local desired = getDesiredPets()
-	local equipped = getEquippedPets()
 
-	local desiredGuids = {}
+	local desiredIds = {}
 	for _, pet in ipairs(desired) do
-		desiredGuids[pet.Guid] = pet
+		desiredIds[pet.Id] = pet
 	end
 
-	local equippedGuids = {}
-	for _, pet in ipairs(equipped) do
-		equippedGuids[pet.Guid] = pet
-	end
-
-	for _, pet in ipairs(equipped) do
-		if not desiredGuids[pet.Guid] then
-			Networking.Pets.RequestUnequip:Fire(pet.Guid)
+	for guid in pairs(equippedCache) do
+		if not desiredIds[guid] then
+			Networking.Pets.RequestUnequip:Fire(guid)
 			task.wait(0.2)
 		end
 	end
 
 	for _, pet in ipairs(desired) do
-		if not equippedGuids[pet.Guid] then
+		if not equippedCache[pet.Id] then
 			Networking.Pets.RequestEquipByName:Fire(pet.Name)
 			task.wait(0.2)
 		end
@@ -484,27 +496,49 @@ local function tryBuyPet(wildPet)
 	task.spawn(sendPetWebhook, data, price, oneIn)
 end
 
-task.spawn(runAutoBuySeeds)
-task.spawn(runAutoBuyGears)
-task.spawn(runAutoBuyCrates)
+-- Seed initial equipped cache then sync
+task.spawn(function()
+	refreshEquippedCache()
+	task.wait(0.5)
+	syncPets()
+end)
 
+-- Periodic cache refresh + sync every 45 seconds to catch any missed events
+task.spawn(function()
+	while true do
+		task.wait(45)
+		local cfg = CFG.AUTO_EQUIP_PETS
+		if cfg and cfg.ENABLED then
+			refreshEquippedCache()
+			task.wait(0.3)
+			syncPets()
+		end
+	end
+end)
+
+-- Re-sync when a new pet is received
 Backpack.ChildAdded:Connect(function()
 	task.wait(0.2)
 	task.spawn(runAutoOpenEggs)
 	task.spawn(runAutoOpenSeedPacks)
 	task.spawn(runAutoOpenCrates)
+	task.spawn(syncPets)
 end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
 	char:WaitForChild("Humanoid")
 	task.wait(0.5)
+	refreshEquippedCache()
+	task.wait(0.3)
 	task.spawn(syncPets)
 end)
 
+task.spawn(runAutoBuySeeds)
+task.spawn(runAutoBuyGears)
+task.spawn(runAutoBuyCrates)
 task.spawn(runAutoOpenEggs)
 task.spawn(runAutoOpenSeedPacks)
 task.spawn(runAutoOpenCrates)
-task.spawn(syncPets)
 task.spawn(runAutoBuySlots)
 
 if wildPetSpawns then
