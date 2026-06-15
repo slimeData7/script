@@ -18,56 +18,28 @@ local PlayerStateClient = require(ReplicatedStorage.ClientModules.PlayerStateCli
 
 local replica = PlayerStateClient:WaitForLocalReplica(30)
 
-local GUIDS_CLAIMED = {}
-local ICON_CACHE = {}
-
--- Build config lookups once
-local petCfg = CFG.AUTO_EQUIP_PETS
-local blacklistSet = {}
-if petCfg then
-	for _, name in ipairs(petCfg.BLACKLIST or {}) do
-		blacklistSet[name] = true
-	end
-end
-
--- Equipped pet cache: maps pet NAME to data
-local equippedCache = {}
-
-Networking.Pets.PetEquipped.OnClientEvent:Connect(function(petName, petData)
-	if type(petName) ~= "string" then return end
-	print("[AUTO_EQUIP_PETS] PetEquipped - Name:", petName)
-	equippedCache[petName] = petData or {}
-	task.spawn(function()
-		local cfg = CFG.AUTO_EQUIP_PETS
-		if cfg and cfg.ENABLED then syncPets() end
-	end)
-end)
-
-Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(petName)
-	if type(petName) ~= "string" then return end
-	print("[AUTO_EQUIP_PETS] PetUnequipped - Name:", petName)
-	equippedCache[petName] = nil
-end)
-
-local function refreshEquippedCache()
-	local ok, result = pcall(function()
-		return Networking.Pets.GetEquippedPets:Fire()
-	end)
-	if ok and type(result) == "table" then
-		equippedCache = {}
-		for _, pet in ipairs(result) do
-			if type(pet) == "table" and type(pet.Name) == "string" then
-				equippedCache[pet.Name] = pet
-				print("[AUTO_EQUIP_PETS] Cached equipped - Name:", pet.Name)
-			end
-		end
-	end
-end
-
 local StockValues = ReplicatedStorage:WaitForChild("StockValues")
 local SeedShopItems = StockValues:WaitForChild("SeedShop"):WaitForChild("Items")
 local GearShopItems = StockValues:WaitForChild("GearShop"):WaitForChild("Items")
 local CrateShopItems = StockValues:WaitForChild("CrateShop"):WaitForChild("Items")
+
+local wildPetRef = workspace:WaitForChild("Map", 30)
+if wildPetRef then wildPetRef = wildPetRef:WaitForChild("WildPetRef", 30) end
+local wildPetSpawns = wildPetRef and workspace.Map:FindFirstChild("WildPetSpawns")
+
+local GUIDS_CLAIMED = {}
+local ICON_CACHE = {}
+local equippedCache = {}
+
+local blacklistSet = {}
+do
+	local petCfg = CFG.AUTO_EQUIP_PETS
+	if petCfg then
+		for _, name in ipairs(petCfg.BLACKLIST or {}) do
+			blacklistSet[name] = true
+		end
+	end
+end
 
 local seedPriceMap = {}
 for _, entry in ipairs(SeedData) do
@@ -97,22 +69,29 @@ end
 
 local function getStockValue(itemsFolder, itemName)
 	local child = itemsFolder:FindFirstChild(itemName)
-	if child then return child.Value end
-	return 0
+	return child and child.Value or 0
 end
 
-local function getToolsFromBackpack(attrKey, attrValue)
+local function getToolFromBackpackByAttr(attrKey, attrValue)
+	local char = LocalPlayer.Character
+	local function scan(parent)
+		for _, v in pairs(parent:GetChildren()) do
+			if v:IsA("Tool") and v:GetAttribute(attrKey) == attrValue then
+				return v
+			end
+		end
+		return nil
+	end
+	return scan(Backpack) or (char and scan(char)) or nil
+end
+
+local function getAllToolsFromBackpackByAttr(attrKey, attrValue)
 	local results = {}
 	local char = LocalPlayer.Character
 	local function scan(parent)
 		for _, v in pairs(parent:GetChildren()) do
-			if v:IsA("Tool") then
-				local a = v:GetAttribute(attrKey)
-				if attrValue == nil and a ~= nil then
-					table.insert(results, v)
-				elseif a == attrValue then
-					table.insert(results, v)
-				end
+			if v:IsA("Tool") and v:GetAttribute(attrKey) == attrValue then
+				table.insert(results, v)
 			end
 		end
 	end
@@ -121,305 +100,18 @@ local function getToolsFromBackpack(attrKey, attrValue)
 	return results
 end
 
-local function runAutoBuySeeds()
-	local cfg = CFG.AUTO_BUY_SEEDS
-	if not cfg or not cfg.ENABLED then return end
-	for seedName, wantCount in pairs(cfg) do
-		if seedName == "ENABLED" then continue end
-		local price = seedPriceMap[seedName]
-		if not price then continue end
-		local stock = getStockValue(SeedShopItems, seedName)
-		if stock <= 0 then continue end
-		local balance = getBalance()
-		if balance < price then continue end
-		local toBuy = math.min(wantCount, stock)
-		for i = 1, toBuy do
-			local bal = getBalance()
-			if bal < price then break end
-			Networking.SeedShop.PurchaseSeed:Fire(seedName)
-			task.wait(0.08)
-		end
-	end
-end
-
-Networking.SeedShop.PersonalRestock.OnClientEvent:Connect(function()
-	task.wait(0.15)
-	task.spawn(runAutoBuySeeds)
-end)
-
-local function runAutoBuyGears()
-	local cfg = CFG.AUTO_BUY_GEARS
-	if not cfg or not cfg.ENABLED then return end
-	for gearName, wantCount in pairs(cfg) do
-		if gearName == "ENABLED" then continue end
-		local price = gearPriceMap[gearName]
-		if not price then continue end
-		local stock = getStockValue(GearShopItems, gearName)
-		if stock <= 0 then continue end
-		local balance = getBalance()
-		if balance < price then continue end
-		local toBuy = math.min(wantCount, stock)
-		for i = 1, toBuy do
-			local bal = getBalance()
-			if bal < price then break end
-			Networking.GearShop.PurchaseGear:Fire(gearName)
-			task.wait(0.08)
-		end
-	end
-end
-
-Networking.GearShop.PersonalRestock.OnClientEvent:Connect(function()
-	task.wait(0.15)
-	task.spawn(runAutoBuyGears)
-end)
-
-local function runAutoBuyCrates()
-	local cfg = CFG.AUTO_BUY_CRATES
-	if not cfg or not cfg.ENABLED then return end
-	for crateName, wantCount in pairs(cfg) do
-		if crateName == "ENABLED" then continue end
-		local crateEntry = CrateData.GetData(crateName)
-		if not crateEntry then continue end
-		local price = crateEntry.Cost or crateEntry.Price
-		if not price then continue end
-		local stock = getStockValue(CrateShopItems, crateName)
-		if stock <= 0 then continue end
-		local balance = getBalance()
-		if balance < price then continue end
-		local toBuy = math.min(wantCount, stock)
-		for i = 1, toBuy do
-			local bal = getBalance()
-			if bal < price then break end
-			Networking.CrateShop.PurchaseCrate:Fire(crateName)
-			task.wait(0.08)
-		end
-	end
-end
-
-Networking.CrateShop.PersonalRestock.OnClientEvent:Connect(function()
-	task.wait(0.15)
-	task.spawn(runAutoBuyCrates)
-end)
-
-local function runAutoOpenEggs()
-	local cfg = CFG.AUTO_OPEN_EGGS
-	if not cfg or not cfg.ENABLED then return end
-	for eggName, wantCount in pairs(cfg) do
-		if eggName == "ENABLED" then continue end
-		local tools = getToolsFromBackpack("Egg", eggName)
-		if #tools == 0 then tools = getToolsFromBackpack("EggName", eggName) end
-		if #tools == 0 then continue end
-		local opened = 0
-		for _, tool in pairs(tools) do
-			if opened >= wantCount then break end
-			if not tool.Parent then continue end
-			local eggId = tool:GetAttribute("EggId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
-			if not eggId then continue end
-			local ok = pcall(function()
-				return Networking.Egg.OpenEgg:InvokeServer(eggId)
-			end)
-			if ok then opened += 1 end
-			task.wait(0.35)
-		end
-	end
-end
-
-local function runAutoOpenSeedPacks()
-	local cfg = CFG.AUTO_OPEN_SEEDPACKS
-	if not cfg or not cfg.ENABLED then return end
-	local lastPackOpenTime = 0
-	local packServerCooldown = 1.0
-	for packName, wantCount in pairs(cfg) do
-		if packName == "ENABLED" then continue end
-		local opened = 0
-		while opened < wantCount do
-			local tools = getToolsFromBackpack("SeedPack", packName)
-			if #tools == 0 then tools = getToolsFromBackpack("PackName", packName) end
-			if #tools == 0 then break end
-			local tool = tools[1]
-			if not tool.Parent then task.wait(0.1) continue end
-			local packId = tool:GetAttribute("PackId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
-			if not packId then break end
-			local elapsed = os.clock() - lastPackOpenTime
-			local waitNeeded = packServerCooldown - elapsed
-			if waitNeeded > 0 then task.wait(waitNeeded) end
-			local ok, result = pcall(function()
-				return Networking.SeedPack.OpenSeedPack:InvokeServer(packId)
-			end)
-			lastPackOpenTime = os.clock()
-			if ok then
-				opened += 1
-				if type(result) == "table" then
-					local sw = result.Cooldown or result.WaitTime or result.NextOpen or result.Timer
-					if type(sw) == "number" and sw > 0 then
-						packServerCooldown = sw
-					end
-				end
-			else
-				task.wait(1)
-			end
-		end
-	end
-end
-
-local function runAutoOpenCrates()
-	local cfg = CFG.AUTO_OPEN_CRATES
-	if not cfg or not cfg.ENABLED then return end
-	for crateName, wantCount in pairs(cfg) do
-		if crateName == "ENABLED" then continue end
-		local tools = getToolsFromBackpack("Crate", crateName)
-		if #tools == 0 then continue end
-		local opened = 0
-		for _, tool in pairs(tools) do
-			if opened >= wantCount then break end
-			if not tool.Parent then continue end
-			local crateId = tool:GetAttribute("Crate") or tool:GetAttribute("CrateId") or tool:GetAttribute("UUID")
-			if not crateId then continue end
-			local ok = pcall(function()
-				return Networking.Crate.OpenCrate:InvokeServer(crateId)
-			end)
-			if ok then opened += 1 end
-			task.wait(0.35)
-		end
-	end
-end
-
-local function getOwnedPets()
-	local pets = {}
-	-- FIX: Read from Inventory.Pets, not Data.Pets
-	local inventoryData = replica and replica.Data and replica.Data.Inventory
-	if not inventoryData or not inventoryData.Pets then
-		print("[AUTO_EQUIP_PETS] WARNING: No pet data in replica.Data.Inventory.Pets")
-		return pets
-	end
-	
-	local petsData = inventoryData.Pets
-	for petId, petInfo in pairs(petsData) do
-		if type(petInfo) == "table" and type(petInfo.Name) == "string" then
-			table.insert(pets, { Id = petId, Name = petInfo.Name, Equipped = petInfo.Equipped or false })
-			print("[AUTO_EQUIP_PETS] Owned pet - ID:", petId, "Name:", petInfo.Name, "Equipped:", petInfo.Equipped)
-		end
-	end
-	
-	return pets
-end
-
-local function getDesiredPets()
-	local cfg = CFG.AUTO_EQUIP_PETS
-	local maxSlots = LocalPlayer:GetAttribute("MaxEquippedPets") or 1
-	print("[AUTO_EQUIP_PETS] Max equipped slots:", maxSlots)
-
-	local ownedPets = getOwnedPets()
-	local ownedByName = {}
-	
-	for _, pet in ipairs(ownedPets) do
-		if not ownedByName[pet.Name] then
-			ownedByName[pet.Name] = {}
-		end
-		table.insert(ownedByName[pet.Name], pet)
-		print("[AUTO_EQUIP_PETS] Indexed owned pet - Name:", pet.Name)
-	end
-
-	local desired = {}
-	for _, name in ipairs(cfg.PRIORITY or {}) do
-		if #desired >= maxSlots then
-			print("[AUTO_EQUIP_PETS] Reached max slots")
-			break
-		end
-		if blacklistSet[name] then
-			print("[AUTO_EQUIP_PETS] Skipping blacklisted:", name)
-		else
-			if ownedByName[name] and #ownedByName[name] > 0 then
-				local pet = ownedByName[name][1]
-				table.insert(desired, pet)
-				print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "ID:", pet.Id)
-			else
-				print("[AUTO_EQUIP_PETS] Pet from PRIORITY not owned:", name)
-				-- Debug: print all available pet names
-				print("[AUTO_EQUIP_PETS] Available pet names:")
-				for petName in pairs(ownedByName) do
-					print("[AUTO_EQUIP_PETS]   - " .. petName)
-				end
-			end
-		end
-	end
-
-	print("[AUTO_EQUIP_PETS] Desired pets count:", #desired)
-	return desired
-end
-
-function syncPets()
-	local cfg = CFG.AUTO_EQUIP_PETS
-	if not cfg or not cfg.ENABLED then
-		print("[AUTO_EQUIP_PETS] Sync disabled")
-		return
-	end
-
-	print("[AUTO_EQUIP_PETS] ========== SYNC START ==========")
-
-	local desired = getDesiredPets()
-	print("[AUTO_EQUIP_PETS] Desired pets:", #desired)
-	for _, pet in ipairs(desired) do
-		print("[AUTO_EQUIP_PETS]   - " .. pet.Name)
-	end
-
-	print("[AUTO_EQUIP_PETS] Currently equipped:")
-	for petName, petData in pairs(equippedCache) do
-		print("[AUTO_EQUIP_PETS]   - " .. petName)
-	end
-
-	-- Build a set of desired pet names for quick lookup
-	local desiredNames = {}
-	for _, pet in ipairs(desired) do
-		desiredNames[pet.Name] = pet
-	end
-
-	-- Unequip pets that are NOT in desired list
-	for petName in pairs(equippedCache) do
-		if not desiredNames[petName] then
-			print("[AUTO_EQUIP_PETS] Unequipping pet:", petName)
-			Networking.Pets.RequestUnequipByName:Fire(petName)
-			task.wait(0.2)
-		end
-	end
-
-	-- Equip desired pets that are NOT currently equipped
-	for _, pet in ipairs(desired) do
-		if not equippedCache[pet.Name] then
-			print("[AUTO_EQUIP_PETS] Equipping pet:", pet.Name)
-			Networking.Pets.RequestEquipByName:Fire(pet.Name)
-			task.wait(0.2)
-		else
-			print("[AUTO_EQUIP_PETS] Pet already equipped:", pet.Name)
-		end
-	end
-
-	print("[AUTO_EQUIP_PETS] ========== SYNC END ==========")
-end
-
-local function runAutoBuySlots()
-	local cfg = CFG.AUTO_BUY_SLOTS
-	if not cfg or not cfg.ENABLED then return end
-	local maxSlots = cfg.MAX_SLOTS or 6
-	local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-	if type(currentSlots) ~= "number" or currentSlots <= 0 then
-		currentSlots = PetSlotPrices.BaseMax
-	end
-	currentSlots = math.floor(currentSlots)
-	while currentSlots < maxSlots do
-		local price = PetSlotPrices.GetNextPrice(currentSlots)
-		if not price then break end
-		local balance = getBalance()
-		if balance < price then break end
-		Networking.Pets.RequestPurchasePetSlot:Fire()
-		task.wait(0.5)
-		local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-		if type(newSlots) == "number" and newSlots > currentSlots then
-			currentSlots = math.floor(newSlots)
-		else
-			break
-		end
-	end
+local function equipAndActivateTool(tool)
+	local char = LocalPlayer.Character
+	if not char then return false end
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return false end
+	humanoid:EquipTool(tool)
+	task.wait(0.1)
+	tool:Activate()
+	task.wait(0.1)
+	humanoid:UnequipTools()
+	task.wait(0.1)
+	return true
 end
 
 local function claimGuid(guid)
@@ -463,6 +155,236 @@ local function getIconUrl(iconAssetId)
 	return thumbnailUrl
 end
 
+local function runAutoBuySeeds()
+	local cfg = CFG.AUTO_BUY_SEEDS
+	if not cfg or not cfg.ENABLED then return end
+	for seedName, wantCount in pairs(cfg) do
+		if seedName == "ENABLED" then continue end
+		local price = seedPriceMap[seedName]
+		if not price then continue end
+		local stock = getStockValue(SeedShopItems, seedName)
+		if stock <= 0 then continue end
+		local toBuy = math.min(wantCount, stock)
+		for i = 1, toBuy do
+			if getBalance() < price then break end
+			Networking.SeedShop.PurchaseSeed:Fire(seedName)
+			task.wait(0.08)
+		end
+	end
+end
+
+local function runAutoBuyGears()
+	local cfg = CFG.AUTO_BUY_GEARS
+	if not cfg or not cfg.ENABLED then return end
+	for gearName, wantCount in pairs(cfg) do
+		if gearName == "ENABLED" then continue end
+		local price = gearPriceMap[gearName]
+		if not price then continue end
+		local stock = getStockValue(GearShopItems, gearName)
+		if stock <= 0 then continue end
+		local toBuy = math.min(wantCount, stock)
+		for i = 1, toBuy do
+			if getBalance() < price then break end
+			Networking.GearShop.PurchaseGear:Fire(gearName)
+			task.wait(0.08)
+		end
+	end
+end
+
+local function runAutoBuyCrates()
+	local cfg = CFG.AUTO_BUY_CRATES
+	if not cfg or not cfg.ENABLED then return end
+	for crateName, wantCount in pairs(cfg) do
+		if crateName == "ENABLED" then continue end
+		local crateEntry = CrateData.GetData(crateName)
+		if not crateEntry then continue end
+		local price = crateEntry.Cost or crateEntry.Price
+		if not price then continue end
+		local stock = getStockValue(CrateShopItems, crateName)
+		if stock <= 0 then continue end
+		local toBuy = math.min(wantCount, stock)
+		for i = 1, toBuy do
+			if getBalance() < price then break end
+			Networking.CrateShop.PurchaseCrate:Fire(crateName)
+			task.wait(0.08)
+		end
+	end
+end
+
+local function runAutoBuySlots()
+	local cfg = CFG.AUTO_BUY_SLOTS
+	if not cfg or not cfg.ENABLED then return end
+	local maxSlots = cfg.MAX_SLOTS or 6
+	local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+	if type(currentSlots) ~= "number" or currentSlots <= 0 then
+		currentSlots = PetSlotPrices.BaseMax
+	end
+	currentSlots = math.floor(currentSlots)
+	while currentSlots < maxSlots do
+		local price = PetSlotPrices.GetNextPrice(currentSlots)
+		if not price then break end
+		if getBalance() < price then break end
+		Networking.Pets.RequestPurchasePetSlot:Fire()
+		task.wait(0.5)
+		local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+		if type(newSlots) == "number" and newSlots > currentSlots then
+			currentSlots = math.floor(newSlots)
+		else
+			break
+		end
+	end
+end
+
+local function runAutoOpenEggs()
+	local cfg = CFG.AUTO_OPEN_EGGS
+	if not cfg or not cfg.ENABLED then return end
+	for eggName, wantCount in pairs(cfg) do
+		if eggName == "ENABLED" then continue end
+		local opened = 0
+		while opened < wantCount do
+			local tool = getToolFromBackpackByAttr("Egg", eggName)
+			if not tool then break end
+			if not tool.Parent then task.wait(0.1) continue end
+			equipAndActivateTool(tool)
+			opened += 1
+			task.wait(0.5)
+		end
+	end
+end
+
+local function runAutoOpenSeedPacks()
+	local cfg = CFG.AUTO_OPEN_SEEDPACKS
+	if not cfg or not cfg.ENABLED then return end
+	local lastPackOpenTime = 0
+	local packServerCooldown = 1.0
+	for packName, wantCount in pairs(cfg) do
+		if packName == "ENABLED" then continue end
+		local opened = 0
+		while opened < wantCount do
+			local tool = getToolFromBackpackByAttr("SeedPack", packName)
+			if not tool then tool = getToolFromBackpackByAttr("PackName", packName) end
+			if not tool then break end
+			if not tool.Parent then task.wait(0.1) continue end
+			local elapsed = os.clock() - lastPackOpenTime
+			local waitNeeded = packServerCooldown - elapsed
+			if waitNeeded > 0 then task.wait(waitNeeded) end
+			local packId = tool:GetAttribute("PackId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
+			if not packId then break end
+			local ok, result = pcall(function()
+				return Networking.SeedPack.OpenSeedPack:InvokeServer(packId)
+			end)
+			lastPackOpenTime = os.clock()
+			if ok then
+				opened += 1
+				if type(result) == "table" then
+					local sw = result.Cooldown or result.WaitTime or result.NextOpen or result.Timer
+					if type(sw) == "number" and sw > 0 then
+						packServerCooldown = sw
+					end
+				end
+			else
+				task.wait(1)
+			end
+		end
+	end
+end
+
+local function runAutoOpenCrates()
+	local cfg = CFG.AUTO_OPEN_CRATES
+	if not cfg or not cfg.ENABLED then return end
+	for crateName, wantCount in pairs(cfg) do
+		if crateName == "ENABLED" then continue end
+		local opened = 0
+		while opened < wantCount do
+			local tool = getToolFromBackpackByAttr("Crate", crateName)
+			if not tool then break end
+			if not tool.Parent then task.wait(0.1) continue end
+			equipAndActivateTool(tool)
+			opened += 1
+			task.wait(0.5)
+		end
+	end
+end
+
+local function getOwnedPets()
+	local pets = {}
+	local inventoryData = replica and replica.Data and replica.Data.Inventory
+	if not inventoryData or not inventoryData.Pets then return pets end
+	for petId, petInfo in pairs(inventoryData.Pets) do
+		if type(petInfo) == "table" and type(petInfo.Name) == "string" then
+			table.insert(pets, { Id = petId, Name = petInfo.Name, Equipped = petInfo.Equipped or false })
+		end
+	end
+	return pets
+end
+
+local function getDesiredPets()
+	local cfg = CFG.AUTO_EQUIP_PETS
+	local maxSlots = LocalPlayer:GetAttribute("MaxEquippedPets") or 1
+	local ownedPets = getOwnedPets()
+	local ownedByName = {}
+	for _, pet in ipairs(ownedPets) do
+		if not ownedByName[pet.Name] then ownedByName[pet.Name] = {} end
+		table.insert(ownedByName[pet.Name], pet)
+	end
+	local desired = {}
+	for _, name in ipairs(cfg.PRIORITY or {}) do
+		if #desired >= maxSlots then break end
+		if not blacklistSet[name] and ownedByName[name] and #ownedByName[name] > 0 then
+			table.insert(desired, ownedByName[name][1])
+		end
+	end
+	return desired
+end
+
+local function refreshEquippedCache()
+	local ok, result = pcall(function()
+		return Networking.Pets.GetEquippedPets:Fire()
+	end)
+	if ok and type(result) == "table" then
+		equippedCache = {}
+		for _, pet in ipairs(result) do
+			if type(pet) == "table" and type(pet.Name) == "string" then
+				equippedCache[pet.Name] = pet
+			end
+		end
+	end
+end
+
+local function syncPets()
+	local cfg = CFG.AUTO_EQUIP_PETS
+	if not cfg or not cfg.ENABLED then return end
+	local desired = getDesiredPets()
+	local desiredNames = {}
+	for _, pet in ipairs(desired) do
+		desiredNames[pet.Name] = pet
+	end
+	for petName in pairs(equippedCache) do
+		if not desiredNames[petName] then
+			Networking.Pets.RequestUnequipByName:Fire(petName)
+			task.wait(0.25)
+		end
+	end
+	for _, pet in ipairs(desired) do
+		if not equippedCache[pet.Name] then
+			Networking.Pets.RequestEquipByName:Fire(pet.Name)
+			task.wait(0.25)
+		end
+	end
+end
+
+local function shouldBuyPet(data)
+	local cfg = CFG.AUTO_BUY_PETS
+	if not cfg or not cfg.ENABLED then return false end
+	for _, name in ipairs(cfg.NAMES) do
+		if data.DisplayName == name then return true end
+	end
+	for _, rarity in ipairs(cfg.RARITIES) do
+		if data.Rarity == rarity then return true end
+	end
+	return false
+end
+
 local function sendPetWebhook(data, price, oneIn)
 	local cfg = CFG.AUTO_BUY_PETS
 	if oneIn < cfg.MINIMUM_LUCK_SENT then return end
@@ -502,22 +424,6 @@ local function sendPetWebhook(data, price, oneIn)
 	end)
 end
 
-local function shouldBuyPet(data)
-	local cfg = CFG.AUTO_BUY_PETS
-	if not cfg or not cfg.ENABLED then return false end
-	for _, name in ipairs(cfg.NAMES) do
-		if data.DisplayName == name then return true end
-	end
-	for _, rarity in ipairs(cfg.RARITIES) do
-		if data.Rarity == rarity then return true end
-	end
-	return false
-end
-
-local wildPetRef = workspace:WaitForChild("Map", 30)
-if wildPetRef then wildPetRef = wildPetRef:WaitForChild("WildPetRef", 30) end
-local wildPetSpawns = wildPetRef and workspace.Map:FindFirstChild("WildPetSpawns")
-
 local function tryBuyPet(wildPet)
 	local cfg = CFG.AUTO_BUY_PETS
 	if not cfg or not cfg.ENABLED then return end
@@ -532,8 +438,7 @@ local function tryBuyPet(wildPet)
 	if not refPart then return end
 	local price = refPart:GetAttribute("Price") or data.BasePrice
 	if not price then return end
-	local balance = getBalance()
-	if balance < price then return end
+	if getBalance() < price then return end
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
@@ -545,45 +450,67 @@ local function tryBuyPet(wildPet)
 	task.spawn(sendPetWebhook, data, price, oneIn)
 end
 
--- Seed initial equipped cache then sync
-task.spawn(function()
-	print("[AUTO_EQUIP_PETS] Initializing equipped cache...")
-	refreshEquippedCache()
-	task.wait(0.5)
-	syncPets()
-end)
-
--- Periodic cache refresh + sync every 45 seconds to catch any missed events
-task.spawn(function()
-	while true do
-		task.wait(45)
+Networking.Pets.PetEquipped.OnClientEvent:Connect(function(petName, petData)
+	if type(petName) ~= "string" then return end
+	equippedCache[petName] = petData or {}
+	task.spawn(function()
 		local cfg = CFG.AUTO_EQUIP_PETS
-		if cfg and cfg.ENABLED then
-			print("[AUTO_EQUIP_PETS] Periodic refresh (45s interval)")
-			refreshEquippedCache()
-			task.wait(0.3)
-			syncPets()
-		end
-	end
+		if cfg and cfg.ENABLED then syncPets() end
+	end)
 end)
 
--- Re-sync when a new pet is received
+Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(petName)
+	if type(petName) ~= "string" then return end
+	equippedCache[petName] = nil
+end)
+
+Networking.SeedShop.PersonalRestock.OnClientEvent:Connect(function()
+	task.wait(0.15)
+	task.spawn(runAutoBuySeeds)
+end)
+
+Networking.GearShop.PersonalRestock.OnClientEvent:Connect(function()
+	task.wait(0.15)
+	task.spawn(runAutoBuyGears)
+end)
+
+Networking.CrateShop.PersonalRestock.OnClientEvent:Connect(function()
+	task.wait(0.15)
+	task.spawn(runAutoBuyCrates)
+end)
+
 Backpack.ChildAdded:Connect(function()
 	task.wait(0.2)
 	task.spawn(runAutoOpenEggs)
 	task.spawn(runAutoOpenSeedPacks)
 	task.spawn(runAutoOpenCrates)
-	print("[AUTO_EQUIP_PETS] New item in backpack, syncing pets...")
 	task.spawn(syncPets)
 end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
 	char:WaitForChild("Humanoid")
 	task.wait(0.5)
-	print("[AUTO_EQUIP_PETS] Character respawned, refreshing cache...")
 	refreshEquippedCache()
 	task.wait(0.3)
 	task.spawn(syncPets)
+end)
+
+task.spawn(function()
+	refreshEquippedCache()
+	task.wait(0.5)
+	syncPets()
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(45)
+		local cfg = CFG.AUTO_EQUIP_PETS
+		if cfg and cfg.ENABLED then
+			refreshEquippedCache()
+			task.wait(0.3)
+			syncPets()
+		end
+	end
 end)
 
 task.spawn(runAutoBuySeeds)
@@ -601,6 +528,4 @@ if wildPetSpawns then
 	wildPetSpawns.ChildAdded:Connect(function(wildPet)
 		task.spawn(tryBuyPet, wildPet)
 	end)
-else
-	print("[AutoBuyPets] WildPetSpawns not found, pet taming disabled")
 end
