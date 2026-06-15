@@ -295,9 +295,9 @@ local function getOwnedPets()
 	end
 	for guid, petInfo in pairs(data) do
 		if type(petInfo) == "table" then
-			-- Extract the Species field and get display name
 			local species = petInfo.Species
 			if species and species ~= "" then
+				-- FIX: Store BOTH the species (base name) and display name
 				local displayName = PetData.GetSpeciesDisplayName(species)
 				table.insert(pets, { Name = displayName, Species = species })
 				print("[AUTO_EQUIP_PETS] Owned pet - Species:", species, "DisplayName:", displayName)
@@ -314,45 +314,57 @@ local function getDesiredPets()
 	local maxSlots = LocalPlayer:GetAttribute("MaxEquippedPets") or 1
 	print("[AUTO_EQUIP_PETS] Max equipped slots:", maxSlots)
 
-	-- Get all owned pets grouped by display name
 	local ownedPets = getOwnedPets()
 	local ownedByName = {}
+	local ownedBySpecies = {}
 	for _, pet in ipairs(ownedPets) do
 		if not ownedByName[pet.Name] then
 			ownedByName[pet.Name] = {}
 		end
 		table.insert(ownedByName[pet.Name], pet)
-		print("[AUTO_EQUIP_PETS] Indexing owned pet by name:", pet.Name)
+		
+		-- Also index by species for matching against PRIORITY
+		if not ownedBySpecies[pet.Species] then
+			ownedBySpecies[pet.Species] = {}
+		end
+		table.insert(ownedBySpecies[pet.Species], pet)
+		
+		print("[AUTO_EQUIP_PETS] Indexed pet - Name:", pet.Name, "Species:", pet.Species)
 	end
 
-	-- Build desired list by matching PRIORITY against owned pets
 	local desired = {}
 	for _, name in ipairs(cfg.PRIORITY or {}) do
 		if #desired >= maxSlots then
-			print("[AUTO_EQUIP_PETS] Reached max slots, stopping priority iteration")
+			print("[AUTO_EQUIP_PETS] Reached max slots")
 			break
 		end
 		if blacklistSet[name] then
-			print("[AUTO_EQUIP_PETS] Skipping blacklisted pet:", name)
+			print("[AUTO_EQUIP_PETS] Skipping blacklisted:", name)
 		else
-			-- Try by display name first, then by species as fallback
+			-- Try three ways to match:
+			-- 1. By display name (e.g., "Big Dragonfly")
+			-- 2. By species (e.g., "Dragonfly")
+			-- 3. Check if it's a species directly
 			local pet = nil
+			
 			if ownedByName[name] and #ownedByName[name] > 0 then
 				pet = ownedByName[name][1]
+				print("[AUTO_EQUIP_PETS] Matched by display name:", name)
+			elseif ownedBySpecies[name] and #ownedBySpecies[name] > 0 then
+				pet = ownedBySpecies[name][1]
+				print("[AUTO_EQUIP_PETS] Matched by species:", name)
 			else
-				-- Fallback: look for a pet whose species matches the name directly
-				for _, p in ipairs(ownedPets) do
-					if p.Species == name then
-						pet = p
-						break
-					end
+				print("[AUTO_EQUIP_PETS] No match for PRIORITY pet:", name)
+				-- Debug: print all available species
+				print("[AUTO_EQUIP_PETS] Available species:")
+				for species in pairs(ownedBySpecies) do
+					print("[AUTO_EQUIP_PETS]   - " .. species)
 				end
 			end
+			
 			if pet then
 				table.insert(desired, pet)
 				print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "Species:", pet.Species)
-			else
-				print("[AUTO_EQUIP_PETS] Pet from PRIORITY not owned:", name)
 			end
 		end
 	end
