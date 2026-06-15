@@ -30,14 +30,13 @@ if petCfg then
 	end
 end
 
--- Equipped pet cache: maps pet NAME to petData (not GUID!)
+-- Equipped pet cache: maps pet NAME to data
 local equippedCache = {}
 
 Networking.Pets.PetEquipped.OnClientEvent:Connect(function(petName, petData)
 	if type(petName) ~= "string" then return end
-	-- FIX: Event gives us petName directly, not GUID
 	print("[AUTO_EQUIP_PETS] PetEquipped - Name:", petName)
-	equippedCache[petName] = petData
+	equippedCache[petName] = petData or {}
 	task.spawn(function()
 		local cfg = CFG.AUTO_EQUIP_PETS
 		if cfg and cfg.ENABLED then syncPets() end
@@ -46,7 +45,6 @@ end)
 
 Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(petName)
 	if type(petName) ~= "string" then return end
-	-- FIX: Event gives us petName, not GUID
 	print("[AUTO_EQUIP_PETS] PetUnequipped - Name:", petName)
 	equippedCache[petName] = nil
 end)
@@ -288,24 +286,21 @@ end
 
 local function getOwnedPets()
 	local pets = {}
-	local data = replica and replica.Data and replica.Data.Pets
-	if not data then
-		print("[AUTO_EQUIP_PETS] WARNING: No pet data in replica")
+	-- FIX: Read from Inventory.Pets, not Data.Pets
+	local inventoryData = replica and replica.Data and replica.Data.Inventory
+	if not inventoryData or not inventoryData.Pets then
+		print("[AUTO_EQUIP_PETS] WARNING: No pet data in replica.Data.Inventory.Pets")
 		return pets
 	end
-	for guid, petInfo in pairs(data) do
-		if type(petInfo) == "table" then
-			local species = petInfo.Species
-			if species and species ~= "" then
-				-- FIX: Store BOTH the species (base name) and display name
-				local displayName = PetData.GetSpeciesDisplayName(species)
-				table.insert(pets, { Name = displayName, Species = species })
-				print("[AUTO_EQUIP_PETS] Owned pet - Species:", species, "DisplayName:", displayName)
-			else
-				print("[AUTO_EQUIP_PETS] Skipping pet without Species field")
-			end
+	
+	local petsData = inventoryData.Pets
+	for petId, petInfo in pairs(petsData) do
+		if type(petInfo) == "table" and type(petInfo.Name) == "string" then
+			table.insert(pets, { Id = petId, Name = petInfo.Name, Equipped = petInfo.Equipped or false })
+			print("[AUTO_EQUIP_PETS] Owned pet - ID:", petId, "Name:", petInfo.Name, "Equipped:", petInfo.Equipped)
 		end
 	end
+	
 	return pets
 end
 
@@ -316,20 +311,13 @@ local function getDesiredPets()
 
 	local ownedPets = getOwnedPets()
 	local ownedByName = {}
-	local ownedBySpecies = {}
+	
 	for _, pet in ipairs(ownedPets) do
 		if not ownedByName[pet.Name] then
 			ownedByName[pet.Name] = {}
 		end
 		table.insert(ownedByName[pet.Name], pet)
-		
-		-- Also index by species for matching against PRIORITY
-		if not ownedBySpecies[pet.Species] then
-			ownedBySpecies[pet.Species] = {}
-		end
-		table.insert(ownedBySpecies[pet.Species], pet)
-		
-		print("[AUTO_EQUIP_PETS] Indexed pet - Name:", pet.Name, "Species:", pet.Species)
+		print("[AUTO_EQUIP_PETS] Indexed owned pet - Name:", pet.Name)
 	end
 
 	local desired = {}
@@ -341,30 +329,17 @@ local function getDesiredPets()
 		if blacklistSet[name] then
 			print("[AUTO_EQUIP_PETS] Skipping blacklisted:", name)
 		else
-			-- Try three ways to match:
-			-- 1. By display name (e.g., "Big Dragonfly")
-			-- 2. By species (e.g., "Dragonfly")
-			-- 3. Check if it's a species directly
-			local pet = nil
-			
 			if ownedByName[name] and #ownedByName[name] > 0 then
-				pet = ownedByName[name][1]
-				print("[AUTO_EQUIP_PETS] Matched by display name:", name)
-			elseif ownedBySpecies[name] and #ownedBySpecies[name] > 0 then
-				pet = ownedBySpecies[name][1]
-				print("[AUTO_EQUIP_PETS] Matched by species:", name)
-			else
-				print("[AUTO_EQUIP_PETS] No match for PRIORITY pet:", name)
-				-- Debug: print all available species
-				print("[AUTO_EQUIP_PETS] Available species:")
-				for species in pairs(ownedBySpecies) do
-					print("[AUTO_EQUIP_PETS]   - " .. species)
-				end
-			end
-			
-			if pet then
+				local pet = ownedByName[name][1]
 				table.insert(desired, pet)
-				print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "Species:", pet.Species)
+				print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "ID:", pet.Id)
+			else
+				print("[AUTO_EQUIP_PETS] Pet from PRIORITY not owned:", name)
+				-- Debug: print all available pet names
+				print("[AUTO_EQUIP_PETS] Available pet names:")
+				for petName in pairs(ownedByName) do
+					print("[AUTO_EQUIP_PETS]   - " .. petName)
+				end
 			end
 		end
 	end
@@ -399,7 +374,7 @@ function syncPets()
 		desiredNames[pet.Name] = pet
 	end
 
-	-- Unequip pets that are NOT in desired list (use RequestUnequipByName)
+	-- Unequip pets that are NOT in desired list
 	for petName in pairs(equippedCache) do
 		if not desiredNames[petName] then
 			print("[AUTO_EQUIP_PETS] Unequipping pet:", petName)
@@ -408,7 +383,7 @@ function syncPets()
 		end
 	end
 
-	-- Equip desired pets that are NOT currently equipped (use RequestEquipByName)
+	-- Equip desired pets that are NOT currently equipped
 	for _, pet in ipairs(desired) do
 		if not equippedCache[pet.Name] then
 			print("[AUTO_EQUIP_PETS] Equipping pet:", pet.Name)
