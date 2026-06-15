@@ -25,6 +25,10 @@ local seedStockCache = {}
 local gearStockCache = {}
 local crateStockCache = {}
 
+local seedStockReady = false
+local gearStockReady = false
+local crateStockReady = false
+
 local function getBalance()
 	return replica and replica.Data and replica.Data.Sheckles or 0
 end
@@ -54,25 +58,25 @@ end
 
 local function getSeedPrice(seedName)
 	local d = SeedData and SeedData[seedName]
-	if not d then return 0 end
-	return d.Price or d.Cost or d.SeedCost or 0
+	if not d then return nil end
+	return d.Price or d.Cost or d.SeedCost or nil
 end
 
 local function getGearPrice(gearName)
-	if not GearShopData then return 0 end
+	if not GearShopData then return nil end
 	for _, item in pairs(GearShopData) do
 		if type(item) == "table" and item.ItemName == gearName then
-			return item.Cost or item.Price or 0
+			return item.Cost or item.Price or nil
 		end
 	end
-	return 0
+	return nil
 end
 
 local function getCratePrice(crateName)
-	if not CrateData then return 0 end
+	if not CrateData then return nil end
 	local d = CrateData.GetData and CrateData.GetData(crateName) or CrateData[crateName]
-	if not d then return 0 end
-	return d.Cost or d.Price or 0
+	if not d then return nil end
+	return d.Cost or d.Price or nil
 end
 
 local function getToolsFromBackpack(attrKey, attrValue)
@@ -100,73 +104,151 @@ local function tryReadInitialStock()
 		return require(ReplicatedStorage.SharedModules.StockValues)
 	end)
 	if ok and type(stockModule) == "table" then
-		if stockModule.SeedShop then parseStockData(stockModule.SeedShop, seedStockCache) end
-		if stockModule.GearShop then parseStockData(stockModule.GearShop, gearStockCache) end
-		if stockModule.CrateShop then parseStockData(stockModule.CrateShop, crateStockCache) end
+		if stockModule.SeedShop then
+			parseStockData(stockModule.SeedShop, seedStockCache)
+			seedStockReady = true
+			print("[Stock] Seed stock loaded from StockValues")
+			for k, v in pairs(seedStockCache) do
+				print("[Stock]   Seed: " .. k .. " -> " .. tostring(v))
+			end
+		end
+		if stockModule.GearShop then
+			parseStockData(stockModule.GearShop, gearStockCache)
+			gearStockReady = true
+			print("[Stock] Gear stock loaded from StockValues")
+			for k, v in pairs(gearStockCache) do
+				print("[Stock]   Gear: " .. k .. " -> " .. tostring(v))
+			end
+		end
+		if stockModule.CrateShop then
+			parseStockData(stockModule.CrateShop, crateStockCache)
+			crateStockReady = true
+			print("[Stock] Crate stock loaded from StockValues")
+			for k, v in pairs(crateStockCache) do
+				print("[Stock]   Crate: " .. k .. " -> " .. tostring(v))
+			end
+		end
+	else
+		print("[Stock] StockValues not readable, will wait for restock events only")
 	end
 end
 
 local function runAutoBuySeeds()
 	local cfg = CFG.AUTO_BUY_SEEDS
 	if not cfg or not cfg.ENABLED then return end
-	for seedName, wantCount in pairs(cfg) do
-		if seedName == "ENABLED" then continue end
-		if not SeedData[seedName] then continue end
-		local price = getSeedPrice(seedName)
-		local stock = seedStockCache[seedName] or 0
-		if stock <= 0 then continue end
-		local toBuy = math.min(wantCount, stock)
-		for i = 1, toBuy do
-			if price > 0 and getBalance() < price then break end
-			Networking.SeedShop.PurchaseSeed:Fire(seedName)
-			task.wait(0.08)
-		end
-	end
-end
 
-local function runAutoEventSeeds()
-	local cfg = CFG.AUTO_EVENT_SEEDS
-	if not cfg or not cfg.ENABLED then return end
+	if not seedStockReady then
+		print("[AutoBuySeeds] Stock not ready yet, skipping until restock event")
+		return
+	end
+
+	print("[AutoBuySeeds] Running | Balance: " .. formatNumber(getBalance()))
+
 	for seedName, wantCount in pairs(cfg) do
 		if seedName == "ENABLED" then continue end
+
 		local price = getSeedPrice(seedName)
+		if price == nil then
+			print("[AutoBuySeeds] " .. seedName .. " not found in SeedData, skipping")
+			continue
+		end
+
 		local stock = seedStockCache[seedName] or 0
-		if stock <= 0 then continue end
+		if stock <= 0 then
+			print("[AutoBuySeeds] " .. seedName .. " out of stock, skipping")
+			continue
+		end
+
+		local balance = getBalance()
+		if balance < price then
+			print("[AutoBuySeeds] Can't afford " .. seedName .. " | Price: " .. formatNumber(price) .. " | Balance: " .. formatNumber(balance))
+			continue
+		end
+
 		local toBuy = math.min(wantCount, stock)
+		print("[AutoBuySeeds] Buying " .. toBuy .. "x " .. seedName .. " | Price: " .. formatNumber(price) .. " | Stock: " .. stock)
+
 		for i = 1, toBuy do
-			if price > 0 and getBalance() < price then break end
+			local bal = getBalance()
+			if bal < price then
+				print("[AutoBuySeeds] Ran out of money at " .. seedName .. " #" .. i .. " | Balance: " .. formatNumber(bal))
+				break
+			end
 			Networking.SeedShop.PurchaseSeed:Fire(seedName)
 			task.wait(0.08)
 		end
+
+		print("[AutoBuySeeds] Done: " .. seedName)
 	end
 end
 
 Networking.SeedShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
+	print("[AutoBuySeeds] Restock event received")
 	parseStockData(stockData, seedStockCache)
+	seedStockReady = true
+	for k, v in pairs(seedStockCache) do
+		print("[AutoBuySeeds]   " .. k .. " -> " .. tostring(v))
+	end
 	task.wait(0.15)
 	task.spawn(runAutoBuySeeds)
-	task.spawn(runAutoEventSeeds)
 end)
 
 local function runAutoBuyGears()
 	local cfg = CFG.AUTO_BUY_GEARS
 	if not cfg or not cfg.ENABLED then return end
+
+	if not gearStockReady then
+		print("[AutoBuyGears] Stock not ready yet, skipping until restock event")
+		return
+	end
+
+	print("[AutoBuyGears] Running | Balance: " .. formatNumber(getBalance()))
+
 	for gearName, wantCount in pairs(cfg) do
 		if gearName == "ENABLED" then continue end
+
 		local price = getGearPrice(gearName)
+		if price == nil then
+			print("[AutoBuyGears] " .. gearName .. " not found in GearShopData, skipping")
+			continue
+		end
+
 		local stock = gearStockCache[gearName] or 0
-		if stock <= 0 then continue end
+		if stock <= 0 then
+			print("[AutoBuyGears] " .. gearName .. " out of stock, skipping")
+			continue
+		end
+
+		local balance = getBalance()
+		if balance < price then
+			print("[AutoBuyGears] Can't afford " .. gearName .. " | Price: " .. formatNumber(price) .. " | Balance: " .. formatNumber(balance))
+			continue
+		end
+
 		local toBuy = math.min(wantCount, stock)
+		print("[AutoBuyGears] Buying " .. toBuy .. "x " .. gearName .. " | Price: " .. formatNumber(price) .. " | Stock: " .. stock)
+
 		for i = 1, toBuy do
-			if price > 0 and getBalance() < price then break end
+			local bal = getBalance()
+			if bal < price then
+				print("[AutoBuyGears] Ran out of money at " .. gearName .. " #" .. i .. " | Balance: " .. formatNumber(bal))
+				break
+			end
 			Networking.GearShop.PurchaseGear:Fire(gearName)
 			task.wait(0.08)
 		end
+
+		print("[AutoBuyGears] Done: " .. gearName)
 	end
 end
 
 Networking.GearShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
+	print("[AutoBuyGears] Restock event received")
 	parseStockData(stockData, gearStockCache)
+	gearStockReady = true
+	for k, v in pairs(gearStockCache) do
+		print("[AutoBuyGears]   " .. k .. " -> " .. tostring(v))
+	end
 	task.wait(0.15)
 	task.spawn(runAutoBuyGears)
 end)
@@ -174,22 +256,59 @@ end)
 local function runAutoBuyCrates()
 	local cfg = CFG.AUTO_BUY_CRATES
 	if not cfg or not cfg.ENABLED then return end
+
+	if not crateStockReady then
+		print("[AutoBuyCrates] Stock not ready yet, skipping until restock event")
+		return
+	end
+
+	print("[AutoBuyCrates] Running | Balance: " .. formatNumber(getBalance()))
+
 	for crateName, wantCount in pairs(cfg) do
 		if crateName == "ENABLED" then continue end
+
 		local price = getCratePrice(crateName)
+		if price == nil then
+			print("[AutoBuyCrates] " .. crateName .. " not found in CrateData, skipping")
+			continue
+		end
+
 		local stock = crateStockCache[crateName] or 0
-		if stock <= 0 then continue end
+		if stock <= 0 then
+			print("[AutoBuyCrates] " .. crateName .. " out of stock, skipping")
+			continue
+		end
+
+		local balance = getBalance()
+		if balance < price then
+			print("[AutoBuyCrates] Can't afford " .. crateName .. " | Price: " .. formatNumber(price) .. " | Balance: " .. formatNumber(balance))
+			continue
+		end
+
 		local toBuy = math.min(wantCount, stock)
+		print("[AutoBuyCrates] Buying " .. toBuy .. "x " .. crateName .. " | Price: " .. formatNumber(price) .. " | Stock: " .. stock)
+
 		for i = 1, toBuy do
-			if price > 0 and getBalance() < price then break end
+			local bal = getBalance()
+			if bal < price then
+				print("[AutoBuyCrates] Ran out of money at " .. crateName .. " #" .. i .. " | Balance: " .. formatNumber(bal))
+				break
+			end
 			Networking.CrateShop.PurchaseCrate:Fire(crateName)
 			task.wait(0.08)
 		end
+
+		print("[AutoBuyCrates] Done: " .. crateName)
 	end
 end
 
 Networking.CrateShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
+	print("[AutoBuyCrates] Restock event received")
 	parseStockData(stockData, crateStockCache)
+	crateStockReady = true
+	for k, v in pairs(crateStockCache) do
+		print("[AutoBuyCrates]   " .. k .. " -> " .. tostring(v))
+	end
 	task.wait(0.15)
 	task.spawn(runAutoBuyCrates)
 end)
@@ -197,107 +316,256 @@ end)
 local function runAutoOpenEggs()
 	local cfg = CFG.AUTO_OPEN_EGGS
 	if not cfg or not cfg.ENABLED then return end
+
+	print("[AutoOpenEggs] Scanning backpack...")
+
 	for eggName, wantCount in pairs(cfg) do
 		if eggName == "ENABLED" then continue end
+
 		local tools = getToolsFromBackpack("Egg", eggName)
 		if #tools == 0 then tools = getToolsFromBackpack("EggName", eggName) end
-		if #tools == 0 then continue end
+
+		if #tools == 0 then
+			print("[AutoOpenEggs] No " .. eggName .. " in backpack")
+			continue
+		end
+
+		print("[AutoOpenEggs] Found " .. #tools .. "x " .. eggName .. " | Will open up to " .. wantCount)
+
 		local opened = 0
 		for _, tool in pairs(tools) do
 			if opened >= wantCount then break end
 			if not tool.Parent then continue end
 			local eggId = tool:GetAttribute("EggId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
-			if not eggId then continue end
-			local ok = pcall(function()
+			if not eggId then
+				print("[AutoOpenEggs] No ID attribute on " .. eggName .. ", skipping")
+				continue
+			end
+			local ok, result = pcall(function()
 				return Networking.Egg.OpenEgg:InvokeServer(eggId)
 			end)
-			if ok then opened += 1 end
+			if ok then
+				opened += 1
+				print("[AutoOpenEggs] Opened #" .. opened .. " " .. eggName)
+			else
+				print("[AutoOpenEggs] Failed: " .. tostring(result))
+			end
 			task.wait(0.35)
 		end
+
+		print("[AutoOpenEggs] Done: " .. opened .. "x " .. eggName)
 	end
 end
-
-local lastPackOpenTime = 0
-local packServerCooldown = 1.0
 
 local function runAutoOpenSeedPacks()
 	local cfg = CFG.AUTO_OPEN_SEEDPACKS
 	if not cfg or not cfg.ENABLED then return end
+
+	local lastPackOpenTime = 0
+	local packServerCooldown = 1.0
+
+	print("[AutoOpenSeedPacks] Starting...")
+
 	for packName, wantCount in pairs(cfg) do
 		if packName == "ENABLED" then continue end
+
 		local opened = 0
+		print("[AutoOpenSeedPacks] Target: " .. wantCount .. "x " .. packName)
+
 		while opened < wantCount do
 			local tools = getToolsFromBackpack("SeedPack", packName)
 			if #tools == 0 then tools = getToolsFromBackpack("PackName", packName) end
-			if #tools == 0 then break end
+
+			if #tools == 0 then
+				print("[AutoOpenSeedPacks] No " .. packName .. " left in backpack, stopping")
+				break
+			end
+
 			local tool = tools[1]
 			if not tool.Parent then task.wait(0.1) continue end
+
 			local packId = tool:GetAttribute("PackId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
-			if not packId then break end
+			if not packId then
+				print("[AutoOpenSeedPacks] No ID on " .. packName .. ", stopping")
+				break
+			end
+
 			local elapsed = os.clock() - lastPackOpenTime
 			local waitNeeded = packServerCooldown - elapsed
-			if waitNeeded > 0 then task.wait(waitNeeded) end
+			if waitNeeded > 0 then
+				print("[AutoOpenSeedPacks] Waiting " .. string.format("%.2f", waitNeeded) .. "s cooldown")
+				task.wait(waitNeeded)
+			end
+
 			local ok, result = pcall(function()
 				return Networking.SeedPack.OpenSeedPack:InvokeServer(packId)
 			end)
 			lastPackOpenTime = os.clock()
+
 			if ok then
 				opened += 1
+				print("[AutoOpenSeedPacks] Opened #" .. opened .. " " .. packName)
 				if type(result) == "table" then
 					local sw = result.Cooldown or result.WaitTime or result.NextOpen or result.Timer
-					if type(sw) == "number" and sw > 0 then packServerCooldown = sw end
+					if type(sw) == "number" and sw > 0 then
+						packServerCooldown = sw
+						print("[AutoOpenSeedPacks] Cooldown updated: " .. sw .. "s")
+					end
 				end
 			else
+				print("[AutoOpenSeedPacks] Failed: " .. tostring(result))
 				task.wait(1)
 			end
 		end
+
+		print("[AutoOpenSeedPacks] Done: " .. opened .. "x " .. packName)
 	end
 end
 
 local function runAutoOpenCrates()
 	local cfg = CFG.AUTO_OPEN_CRATES
 	if not cfg or not cfg.ENABLED then return end
+
+	print("[AutoOpenCrates] Scanning backpack...")
+
 	for crateName, wantCount in pairs(cfg) do
 		if crateName == "ENABLED" then continue end
+
 		local tools = getToolsFromBackpack("Crate", crateName)
-		if #tools == 0 then continue end
+
+		if #tools == 0 then
+			print("[AutoOpenCrates] No " .. crateName .. " in backpack")
+			continue
+		end
+
+		print("[AutoOpenCrates] Found " .. #tools .. "x " .. crateName .. " | Opening up to " .. wantCount)
+
 		local opened = 0
 		for _, tool in pairs(tools) do
 			if opened >= wantCount then break end
 			if not tool.Parent then continue end
 			local crateId = tool:GetAttribute("Crate") or tool:GetAttribute("CrateId") or tool:GetAttribute("UUID")
-			if not crateId then continue end
-			local ok = pcall(function()
+			if not crateId then
+				print("[AutoOpenCrates] No ID on " .. crateName .. ", skipping")
+				continue
+			end
+			local ok, result = pcall(function()
 				return Networking.Crate.OpenCrate:InvokeServer(crateId)
 			end)
-			if ok then opened += 1 end
+			if ok then
+				opened += 1
+				print("[AutoOpenCrates] Opened #" .. opened .. " " .. crateName)
+			else
+				print("[AutoOpenCrates] Failed: " .. tostring(result))
+			end
 			task.wait(0.35)
 		end
+
+		print("[AutoOpenCrates] Done: " .. opened .. "x " .. crateName)
 	end
 end
 
 local function runAutoEquipPets()
 	local cfg = CFG.AUTO_EQUIP_PETS
 	if not cfg or not cfg.ENABLED then return end
-	for petName, _ in pairs(cfg) do
-		if petName == "ENABLED" then continue end
+
+	print("[AutoEquipPets] Running...")
+
+	if cfg.UNEQUIP_OTHERS then
+		print("[AutoEquipPets] Unequipping all pets first")
+		local ok, err = pcall(function()
+			Networking.Pets.RequestUnequipAll:Fire()
+		end)
+		if not ok then
+			print("[AutoEquipPets] UnequipAll failed: " .. tostring(err) .. " | Trying per-pet unequip fallback")
+			local ok2, err2 = pcall(function()
+				Networking.Pets.RequestUnequipAllPets:Fire()
+			end)
+			if not ok2 then
+				print("[AutoEquipPets] Fallback also failed: " .. tostring(err2))
+			end
+		end
+		task.wait(0.3)
+	end
+
+	for _, petName in ipairs(cfg.PETS) do
+		print("[AutoEquipPets] Equipping: " .. petName)
 		Networking.Pets.RequestEquipByName:Fire(petName)
 		task.wait(0.2)
 	end
+
+	print("[AutoEquipPets] Done")
+end
+
+local function runAutoUpgradePets()
+	local cfg = CFG.AUTO_UPGRADE_PETS
+	if not cfg or not cfg.ENABLED then return end
+
+	local maxLevel = cfg.MAX_LEVEL or 5
+	print("[AutoUpgradePets] Running | Max level: " .. maxLevel)
+
+	local equippedCfg = CFG.AUTO_EQUIP_PETS
+	if not equippedCfg or not equippedCfg.PETS then
+		print("[AutoUpgradePets] No AUTO_EQUIP_PETS.PETS list found, skipping")
+		return
+	end
+
+	for _, petName in ipairs(equippedCfg.PETS) do
+		print("[AutoUpgradePets] Upgrading: " .. petName)
+		for level = 1, maxLevel do
+			local balance = getBalance()
+			print("[AutoUpgradePets] " .. petName .. " upgrade attempt " .. level .. " | Balance: " .. formatNumber(balance))
+			local ok, result = pcall(function()
+				return Networking.Pets.RequestUpgradeByName:InvokeServer(petName, level)
+			end)
+			if ok then
+				print("[AutoUpgradePets] " .. petName .. " upgrade " .. level .. " result: " .. tostring(result))
+				if type(result) == "table" and result.Success == false then
+					print("[AutoUpgradePets] Server rejected upgrade at level " .. level .. ", stopping for " .. petName)
+					break
+				end
+			else
+				print("[AutoUpgradePets] Upgrade failed: " .. tostring(result))
+				break
+			end
+			task.wait(0.3)
+		end
+	end
+
+	print("[AutoUpgradePets] Done")
 end
 
 local function runAutoBuySlots()
 	local cfg = CFG.AUTO_BUY_SLOTS
 	if not cfg or not cfg.ENABLED then return end
+
 	local maxSlots = math.min(cfg.MAX_SLOTS or 6, 6)
+	print("[AutoBuySlots] Targeting " .. maxSlots .. " slots | Balance: " .. formatNumber(getBalance()))
+
 	for i = 1, maxSlots do
-		local price = 0
-		local ok, p = pcall(function() return PetSlotPrices.GetNextPrice(i) end)
-		if ok and type(p) == "number" then price = p end
-		if price > 0 and getBalance() < price then break end
+		local price = nil
+		local ok, p = pcall(function()
+			return PetSlotPrices.GetNextPrice(i)
+		end)
+		if ok and type(p) == "number" then
+			price = p
+		else
+			print("[AutoBuySlots] Could not get price for slot " .. i .. ", skipping remaining")
+			break
+		end
+
+		local balance = getBalance()
+		if balance < price then
+			print("[AutoBuySlots] Can't afford slot " .. i .. " | Price: " .. formatNumber(price) .. " | Balance: " .. formatNumber(balance))
+			break
+		end
+
+		print("[AutoBuySlots] Buying slot " .. i .. " | Price: " .. formatNumber(price))
 		Networking.Pets.RequestPurchasePetSlot:Fire()
 		task.wait(0.3)
 	end
+
+	print("[AutoBuySlots] Done")
 end
 
 local function claimGuid(guid)
@@ -392,48 +660,115 @@ local function shouldBuyPet(data)
 	return false
 end
 
-local wildPetRef = workspace:WaitForChild("Map", 30):WaitForChild("WildPetRef", 30)
-local wildPetSpawns = workspace.Map.WildPetSpawns
+local wildPetRef = workspace:WaitForChild("Map", 30)
+if wildPetRef then
+	wildPetRef = wildPetRef:WaitForChild("WildPetRef", 30)
+end
+
+local wildPetSpawns = wildPetRef and workspace.Map:FindFirstChild("WildPetSpawns")
 
 local function tryBuyPet(wildPet)
 	local cfg = CFG.AUTO_BUY_PETS
 	if not cfg or not cfg.ENABLED then return end
+	if not wildPetRef then
+		print("[AutoBuyPets] WildPetRef not found, skipping")
+		return
+	end
+
 	local petName, guid = parseWildPetName(wildPet.Name)
 	if not petName or not guid then return end
 	if not claimGuid(guid) then return end
+
 	local data = PetData[petName]
-	if not data or not shouldBuyPet(data) then return end
+	if not data then
+		print("[AutoBuyPets] No PetData for: " .. petName)
+		return
+	end
+	if not shouldBuyPet(data) then
+		print("[AutoBuyPets] " .. petName .. " (" .. tostring(data.Rarity) .. ") not in buy list")
+		return
+	end
+
 	local refPart = wildPetRef:FindFirstChild("WildPet_" .. guid)
-	if not refPart then return end
+	if not refPart then
+		print("[AutoBuyPets] No refPart for guid: " .. guid)
+		return
+	end
+
 	local price = refPart:GetAttribute("Price") or data.BasePrice
-	if not price or getBalance() < price then return end
+	if not price then
+		print("[AutoBuyPets] No price for " .. petName .. ", skipping")
+		return
+	end
+
+	local balance = getBalance()
+	if balance < price then
+		print("[AutoBuyPets] Can't afford " .. petName .. " | Price: " .. formatNumber(price) .. " | Balance: " .. formatNumber(balance))
+		return
+	end
+
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
+	if not root then
+		print("[AutoBuyPets] No HumanoidRootPart, skipping " .. petName)
+		return
+	end
+
 	local oneIn = calcOneIn(data.SpawnChance)
+	print("[AutoBuyPets] Taming " .. petName .. " (" .. tostring(data.Rarity) .. ") | Price: " .. formatNumber(price) .. " | 1 in " .. formatNumber(oneIn))
+
 	root.CFrame = CFrame.new(refPart.Position + Vector3.new(0, 3, 0))
 	task.wait(0.2)
-	if not refPart.Parent then return end
+
+	if not refPart.Parent then
+		print("[AutoBuyPets] " .. petName .. " despawned before tame")
+		return
+	end
+
 	Networking.Pets.WildPetTame:Fire(refPart)
+	print("[AutoBuyPets] Tame fired for " .. petName)
 	task.spawn(sendPetWebhook, data, price, oneIn)
 end
 
+print("[Script] Initializing...")
+
 tryReadInitialStock()
 
-for _, wildPet in ipairs(wildPetSpawns:GetChildren()) do
-	task.spawn(tryBuyPet, wildPet)
-end
+if seedStockReady then task.spawn(runAutoBuySeeds) end
+if gearStockReady then task.spawn(runAutoBuyGears) end
+if crateStockReady then task.spawn(runAutoBuyCrates) end
 
-wildPetSpawns.ChildAdded:Connect(function(wildPet)
-	task.spawn(tryBuyPet, wildPet)
+Backpack.ChildAdded:Connect(function()
+	task.wait(0.2)
+	task.spawn(runAutoOpenEggs)
+	task.spawn(runAutoOpenSeedPacks)
+	task.spawn(runAutoOpenCrates)
 end)
 
-task.spawn(runAutoBuySeeds)
-task.spawn(runAutoEventSeeds)
-task.spawn(runAutoBuyGears)
-task.spawn(runAutoBuyCrates)
+LocalPlayer.CharacterAdded:Connect(function(char)
+	char:WaitForChild("Humanoid")
+	task.wait(0.5)
+	task.spawn(runAutoEquipPets)
+	task.spawn(runAutoUpgradePets)
+end)
+
 task.spawn(runAutoOpenEggs)
 task.spawn(runAutoOpenSeedPacks)
 task.spawn(runAutoOpenCrates)
 task.spawn(runAutoEquipPets)
+task.spawn(runAutoUpgradePets)
 task.spawn(runAutoBuySlots)
+
+if wildPetSpawns then
+	for _, wildPet in ipairs(wildPetSpawns:GetChildren()) do
+		task.spawn(tryBuyPet, wildPet)
+	end
+	wildPetSpawns.ChildAdded:Connect(function(wildPet)
+		task.spawn(tryBuyPet, wildPet)
+	end)
+	print("[AutoBuyPets] Watching WildPetSpawns")
+else
+	print("[AutoBuyPets] WildPetSpawns not found, pet taming disabled")
+end
+
+print("[Script] All modules running")
