@@ -1,6 +1,5 @@
--- Pull config
 local CFG = getgenv().CONFIG
-if not CFG then error("[Script] CONFIG not set! Paste config first.") end
+if not CFG then error("[Script] CONFIG not set!") end
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -21,17 +20,10 @@ local replica = PlayerStateClient:WaitForLocalReplica(30)
 
 local GUIDS_CLAIMED = {}
 local ICON_CACHE = {}
+
 local seedStockCache = {}
 local gearStockCache = {}
 local crateStockCache = {}
-
-local function isEmpty(t)
-	if type(t) ~= "table" then return true end
-	for k, v in pairs(t) do
-		if k ~= "ENABLED" then return false end
-	end
-	return true
-end
 
 local function getBalance()
 	return replica and replica.Data and replica.Data.Sheckles or 0
@@ -103,16 +95,6 @@ local function getToolsFromBackpack(attrKey, attrValue)
 	return results
 end
 
-local ATTR_MAP = {
-	Seeds = "SeedTool",
-	Crates = "Crate",
-	Sprinklers = "Sprinkler",
-	WateringCans = "WateringCan",
-	HarvestedFruits = "HarvestedFruit",
-	Gnomes = "Gnome",
-	Mushrooms = "Mushroom",
-}
-
 local function tryReadInitialStock()
 	local ok, stockModule = pcall(function()
 		return require(ReplicatedStorage.SharedModules.StockValues)
@@ -124,19 +106,15 @@ local function tryReadInitialStock()
 	end
 end
 
--- ██ AUTO BUY SEEDS
 local function runAutoBuySeeds()
 	local cfg = CFG.AUTO_BUY_SEEDS
 	if not cfg or not cfg.ENABLED then return end
-
 	for seedName, wantCount in pairs(cfg) do
 		if seedName == "ENABLED" then continue end
 		if not SeedData[seedName] then continue end
-
 		local price = getSeedPrice(seedName)
 		local stock = seedStockCache[seedName] or 0
 		if stock <= 0 then continue end
-
 		local toBuy = math.min(wantCount, stock)
 		for i = 1, toBuy do
 			if price > 0 and getBalance() < price then break end
@@ -146,18 +124,14 @@ local function runAutoBuySeeds()
 	end
 end
 
--- ██ AUTO EVENT SEEDS
 local function runAutoEventSeeds()
 	local cfg = CFG.AUTO_EVENT_SEEDS
 	if not cfg or not cfg.ENABLED then return end
-
 	for seedName, wantCount in pairs(cfg) do
 		if seedName == "ENABLED" then continue end
-
 		local price = getSeedPrice(seedName)
 		local stock = seedStockCache[seedName] or 0
 		if stock <= 0 then continue end
-
 		local toBuy = math.min(wantCount, stock)
 		for i = 1, toBuy do
 			if price > 0 and getBalance() < price then break end
@@ -174,18 +148,14 @@ Networking.SeedShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
 	task.spawn(runAutoEventSeeds)
 end)
 
--- ██ AUTO BUY GEARS
 local function runAutoBuyGears()
 	local cfg = CFG.AUTO_BUY_GEARS
 	if not cfg or not cfg.ENABLED then return end
-
 	for gearName, wantCount in pairs(cfg) do
 		if gearName == "ENABLED" then continue end
-
 		local price = getGearPrice(gearName)
 		local stock = gearStockCache[gearName] or 0
 		if stock <= 0 then continue end
-
 		local toBuy = math.min(wantCount, stock)
 		for i = 1, toBuy do
 			if price > 0 and getBalance() < price then break end
@@ -201,18 +171,14 @@ Networking.GearShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
 	task.spawn(runAutoBuyGears)
 end)
 
--- ██ AUTO BUY CRATES
 local function runAutoBuyCrates()
 	local cfg = CFG.AUTO_BUY_CRATES
 	if not cfg or not cfg.ENABLED then return end
-
 	for crateName, wantCount in pairs(cfg) do
 		if crateName == "ENABLED" then continue end
-
 		local price = getCratePrice(crateName)
 		local stock = crateStockCache[crateName] or 0
 		if stock <= 0 then continue end
-
 		local toBuy = math.min(wantCount, stock)
 		for i = 1, toBuy do
 			if price > 0 and getBalance() < price then break end
@@ -228,25 +194,21 @@ Networking.CrateShop.PersonalRestock.OnClientEvent:Connect(function(stockData)
 	task.spawn(runAutoBuyCrates)
 end)
 
--- ██ AUTO OPEN EGGS
 local function runAutoOpenEggs()
 	local cfg = CFG.AUTO_OPEN_EGGS
 	if not cfg or not cfg.ENABLED then return end
-
 	for eggName, wantCount in pairs(cfg) do
 		if eggName == "ENABLED" then continue end
-
 		local tools = getToolsFromBackpack("Egg", eggName)
 		if #tools == 0 then tools = getToolsFromBackpack("EggName", eggName) end
 		if #tools == 0 then continue end
-
 		local opened = 0
 		for _, tool in pairs(tools) do
 			if opened >= wantCount then break end
 			if not tool.Parent then continue end
 			local eggId = tool:GetAttribute("EggId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
 			if not eggId then continue end
-			local ok, _ = pcall(function()
+			local ok = pcall(function()
 				return Networking.Egg.OpenEgg:InvokeServer(eggId)
 			end)
 			if ok then opened += 1 end
@@ -255,38 +217,30 @@ local function runAutoOpenEggs()
 	end
 end
 
--- ██ AUTO OPEN SEED PACKS
 local lastPackOpenTime = 0
 local packServerCooldown = 1.0
 
 local function runAutoOpenSeedPacks()
 	local cfg = CFG.AUTO_OPEN_SEEDPACKS
 	if not cfg or not cfg.ENABLED then return end
-
 	for packName, wantCount in pairs(cfg) do
 		if packName == "ENABLED" then continue end
 		local opened = 0
-
 		while opened < wantCount do
 			local tools = getToolsFromBackpack("SeedPack", packName)
 			if #tools == 0 then tools = getToolsFromBackpack("PackName", packName) end
 			if #tools == 0 then break end
-
 			local tool = tools[1]
 			if not tool.Parent then task.wait(0.1) continue end
-
 			local packId = tool:GetAttribute("PackId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
 			if not packId then break end
-
 			local elapsed = os.clock() - lastPackOpenTime
 			local waitNeeded = packServerCooldown - elapsed
 			if waitNeeded > 0 then task.wait(waitNeeded) end
-
 			local ok, result = pcall(function()
 				return Networking.SeedPack.OpenSeedPack:InvokeServer(packId)
 			end)
 			lastPackOpenTime = os.clock()
-
 			if ok then
 				opened += 1
 				if type(result) == "table" then
@@ -300,24 +254,20 @@ local function runAutoOpenSeedPacks()
 	end
 end
 
--- ██ AUTO OPEN CRATES
 local function runAutoOpenCrates()
 	local cfg = CFG.AUTO_OPEN_CRATES
 	if not cfg or not cfg.ENABLED then return end
-
 	for crateName, wantCount in pairs(cfg) do
 		if crateName == "ENABLED" then continue end
-
 		local tools = getToolsFromBackpack("Crate", crateName)
 		if #tools == 0 then continue end
-
 		local opened = 0
 		for _, tool in pairs(tools) do
 			if opened >= wantCount then break end
 			if not tool.Parent then continue end
 			local crateId = tool:GetAttribute("Crate") or tool:GetAttribute("CrateId") or tool:GetAttribute("UUID")
 			if not crateId then continue end
-			local ok, _ = pcall(function()
+			local ok = pcall(function()
 				return Networking.Crate.OpenCrate:InvokeServer(crateId)
 			end)
 			if ok then opened += 1 end
@@ -326,11 +276,9 @@ local function runAutoOpenCrates()
 	end
 end
 
--- ██ AUTO EQUIP PETS
 local function runAutoEquipPets()
 	local cfg = CFG.AUTO_EQUIP_PETS
 	if not cfg or not cfg.ENABLED then return end
-
 	for petName, _ in pairs(cfg) do
 		if petName == "ENABLED" then continue end
 		Networking.Pets.RequestEquipByName:Fire(petName)
@@ -338,11 +286,9 @@ local function runAutoEquipPets()
 	end
 end
 
--- ██ AUTO BUY SLOTS
 local function runAutoBuySlots()
 	local cfg = CFG.AUTO_BUY_SLOTS
 	if not cfg or not cfg.ENABLED then return end
-
 	local maxSlots = math.min(cfg.MAX_SLOTS or 6, 6)
 	for i = 1, maxSlots do
 		local price = 0
@@ -354,65 +300,6 @@ local function runAutoBuySlots()
 	end
 end
 
--- ██ MAIL / GIFT HELPERS
-local function resolveUserId(username)
-	local ok, result = pcall(function()
-		return Networking.Mailbox.LookupPlayer:InvokeServer(username)
-	end)
-	if not ok or not result then return nil end
-	return type(result) == "table" and (result[1] or result.userId or result.UserId) or result
-end
-
-local function runAutoMail()
-	local cfg = CFG.AUTO_MAIL
-	if not cfg or not cfg.ENABLED or not cfg.USERNAME or cfg.USERNAME == "" then return end
-
-	local userId = resolveUserId(cfg.USERNAME)
-	if not userId then return end
-
-	local batch = {}
-	for category, itemData in pairs(cfg.ITEMS) do
-		local attrKey = ATTR_MAP[category]
-		if not attrKey or type(itemData) ~= "table" then continue end
-		for itemName, count in pairs(itemData) do
-			local tools = getToolsFromBackpack(attrKey, itemName)
-			for i, tool in pairs(tools) do
-				if i > count then break end
-				local uuid = tool:GetAttribute("UUID") or tool:GetAttribute("Id") or tool.Name
-				table.insert(batch, { type = category, id = uuid })
-			end
-		end
-	end
-
-	if #batch == 0 then return end
-	pcall(function()
-		Networking.Mailbox.SendBatch:InvokeServer(userId, batch, cfg.NOTE or "")
-	end)
-end
-
-local function runAutoGift()
-	local cfg = CFG.AUTO_GIFT
-	if not cfg or not cfg.ENABLED or not cfg.USERNAME or cfg.USERNAME == "" then return end
-
-	local userId = resolveUserId(cfg.USERNAME)
-	if not userId then return end
-
-	for category, itemData in pairs(cfg.ITEMS) do
-		local attrKey = ATTR_MAP[category]
-		if not attrKey or type(itemData) ~= "table" then continue end
-		for itemName, count in pairs(itemData) do
-			local tools = getToolsFromBackpack(attrKey, itemName)
-			for i, tool in pairs(tools) do
-				if i > count then break end
-				local uuid = tool:GetAttribute("UUID") or tool:GetAttribute("Id") or tool.Name
-				Networking.Gifting.Send:Fire(userId, category, uuid)
-				task.wait(0.2)
-			end
-		end
-	end
-end
-
--- ██ WILD PETS
 local function claimGuid(guid)
 	if GUIDS_CLAIMED[guid] then return false end
 	GUIDS_CLAIMED[guid] = true
@@ -455,10 +342,9 @@ local function getIconUrl(iconAssetId)
 end
 
 local function sendPetWebhook(data, price, oneIn)
-	local cfg = CFG.WILD_PET
+	local cfg = CFG.AUTO_BUY_PETS
 	if oneIn < cfg.MINIMUM_LUCK_SENT then return end
 	if not cfg.WEBHOOK_URL or cfg.WEBHOOK_URL == "" then return end
-
 	local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
 	local title = "🐾 Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
 	local fields = {
@@ -470,15 +356,20 @@ local function sendPetWebhook(data, price, oneIn)
 	if cfg.NOTE and cfg.NOTE ~= "" then
 		table.insert(fields, { name = "Note", value = cfg.NOTE, inline = false })
 	end
-	local embed = { title = title, color = 0x5865F2, fields = fields, footer = { text = "discord.gg/idiothub" } }
+	local embed = {
+		title = title,
+		color = 0x5865F2,
+		fields = fields,
+		footer = { text = "discord.gg/idiothub" }
+	}
 	local thumbnailUrl = getIconUrl(data.Image)
 	if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
 	local mention = (cfg.DISCORD_ID and cfg.DISCORD_ID ~= "") and ("<@" .. cfg.DISCORD_ID .. ">") or nil
 	local payload
-	pcall(function()
+	local ok = pcall(function()
 		payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
 	end)
-	if not payload then return end
+	if not ok or not payload then return end
 	pcall(function()
 		request({
 			Url = cfg.WEBHOOK_URL,
@@ -492,63 +383,50 @@ end
 local function shouldBuyPet(data)
 	local cfg = CFG.AUTO_BUY_PETS
 	if not cfg or not cfg.ENABLED then return false end
-	if cfg.PETS then
-		for petName, _ in pairs(cfg.PETS) do
-			if data.DisplayName == petName then return true end
-		end
+	for _, name in ipairs(cfg.NAMES) do
+		if data.DisplayName == name then return true end
 	end
-	if cfg.RARITIES then
-		for rarityName, _ in pairs(cfg.RARITIES) do
-			if data.Rarity == rarityName then return true end
-		end
+	for _, rarity in ipairs(cfg.RARITIES) do
+		if data.Rarity == rarity then return true end
 	end
 	return false
 end
 
-local wildPetRef = workspace:WaitForChild("Map", 30) and workspace.Map:WaitForChild("WildPetRef", 30)
-local wildPetSpawns = wildPetRef and workspace.Map:FindFirstChild("WildPetSpawns")
+local wildPetRef = workspace:WaitForChild("Map", 30):WaitForChild("WildPetRef", 30)
+local wildPetSpawns = workspace.Map.WildPetSpawns
 
 local function tryBuyPet(wildPet)
-	local wildCfg = CFG.WILD_PET
-	if not wildCfg or not wildCfg.ENABLED then return end
-
+	local cfg = CFG.AUTO_BUY_PETS
+	if not cfg or not cfg.ENABLED then return end
 	local petName, guid = parseWildPetName(wildPet.Name)
 	if not petName or not guid then return end
 	if not claimGuid(guid) then return end
-
 	local data = PetData[petName]
 	if not data or not shouldBuyPet(data) then return end
-
-	local refPart = wildPetRef and wildPetRef:FindFirstChild("WildPet_" .. guid)
+	local refPart = wildPetRef:FindFirstChild("WildPet_" .. guid)
 	if not refPart then return end
-
 	local price = refPart:GetAttribute("Price") or data.BasePrice
 	if not price or getBalance() < price then return end
-
 	local char = LocalPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
-
 	local oneIn = calcOneIn(data.SpawnChance)
 	root.CFrame = CFrame.new(refPart.Position + Vector3.new(0, 3, 0))
 	task.wait(0.2)
-
 	if not refPart.Parent then return end
 	Networking.Pets.WildPetTame:Fire(refPart)
 	task.spawn(sendPetWebhook, data, price, oneIn)
 end
 
--- ██ INIT
 tryReadInitialStock()
 
-if wildPetSpawns then
-	for _, wildPet in ipairs(wildPetSpawns:GetChildren()) do
-		task.spawn(tryBuyPet, wildPet)
-	end
-	wildPetSpawns.ChildAdded:Connect(function(wildPet)
-		task.spawn(tryBuyPet, wildPet)
-	end)
+for _, wildPet in ipairs(wildPetSpawns:GetChildren()) do
+	task.spawn(tryBuyPet, wildPet)
 end
+
+wildPetSpawns.ChildAdded:Connect(function(wildPet)
+	task.spawn(tryBuyPet, wildPet)
+end)
 
 task.spawn(runAutoBuySeeds)
 task.spawn(runAutoEventSeeds)
@@ -559,7 +437,3 @@ task.spawn(runAutoOpenSeedPacks)
 task.spawn(runAutoOpenCrates)
 task.spawn(runAutoEquipPets)
 task.spawn(runAutoBuySlots)
-task.spawn(runAutoMail)
-task.spawn(runAutoGift)
-
-print("[Script] All modules running")
