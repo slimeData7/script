@@ -24,38 +24,31 @@ local ICON_CACHE = {}
 -- Build config lookups once
 local petCfg = CFG.AUTO_EQUIP_PETS
 local blacklistSet = {}
-local priorityRank = {}
 if petCfg then
 	for _, name in ipairs(petCfg.BLACKLIST or {}) do
 		blacklistSet[name] = true
 	end
-	for i, name in ipairs(petCfg.PRIORITY or {}) do
-		priorityRank[name] = i
-	end
 end
 
--- Equipped pet cache kept in sync via server events
+-- Equipped pet cache: maps pet NAME to petData (not GUID!)
 local equippedCache = {}
 
-Networking.Pets.PetEquipped.OnClientEvent:Connect(function(guid, petData)
-	if type(guid) ~= "string" then return end
-	-- FIX: Use guid as the key, and extract pet name from petData correctly
-	equippedCache[guid] = {
-		Id   = guid,
-		Name = (type(petData) == "table" and (petData.Name or petData.DisplayName)) or "Pet",
-	}
-	print("[AUTO_EQUIP_PETS] PetEquipped event fired - GUID:", guid, "Name:", equippedCache[guid].Name)
+Networking.Pets.PetEquipped.OnClientEvent:Connect(function(petName, petData)
+	if type(petName) ~= "string" then return end
+	-- FIX: Event gives us petName directly, not GUID
+	print("[AUTO_EQUIP_PETS] PetEquipped - Name:", petName)
+	equippedCache[petName] = petData
 	task.spawn(function()
 		local cfg = CFG.AUTO_EQUIP_PETS
 		if cfg and cfg.ENABLED then syncPets() end
 	end)
 end)
 
-Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(guid)
-	if type(guid) == "string" then
-		print("[AUTO_EQUIP_PETS] PetUnequipped event fired - GUID:", guid)
-		equippedCache[guid] = nil
-	end
+Networking.Pets.PetUnequipped.OnClientEvent:Connect(function(petName)
+	if type(petName) ~= "string" then return end
+	-- FIX: Event gives us petName, not GUID
+	print("[AUTO_EQUIP_PETS] PetUnequipped - Name:", petName)
+	equippedCache[petName] = nil
 end)
 
 local function refreshEquippedCache()
@@ -65,9 +58,9 @@ local function refreshEquippedCache()
 	if ok and type(result) == "table" then
 		equippedCache = {}
 		for _, pet in ipairs(result) do
-			if type(pet) == "table" and type(pet.Id) == "string" then
-				equippedCache[pet.Id] = pet
-				print("[AUTO_EQUIP_PETS] Cached equipped pet - GUID:", pet.Id, "Name:", pet.Name or "Unknown")
+			if type(pet) == "table" and type(pet.Name) == "string" then
+				equippedCache[pet.Name] = pet
+				print("[AUTO_EQUIP_PETS] Cached equipped - Name:", pet.Name)
 			end
 		end
 	end
@@ -296,15 +289,21 @@ end
 local function getOwnedPets()
 	local pets = {}
 	local data = replica and replica.Data and replica.Data.Pets
-	if not data then 
+	if not data then
 		print("[AUTO_EQUIP_PETS] WARNING: No pet data in replica")
-		return pets 
+		return pets
 	end
 	for guid, petInfo in pairs(data) do
 		if type(petInfo) == "table" then
-			local petName = petInfo.Name or petInfo.DisplayName
-			table.insert(pets, { Id = guid, Name = petName })
-			print("[AUTO_EQUIP_PETS] Owned pet - GUID:", guid, "Name:", petName)
+			-- Extract the Species field and get display name
+			local species = petInfo.Species
+			if species and species ~= "" then
+				local displayName = PetData.GetSpeciesDisplayName(species)
+				table.insert(pets, { Name = displayName, Species = species })
+				print("[AUTO_EQUIP_PETS] Owned pet - Species:", species, "DisplayName:", displayName)
+			else
+				print("[AUTO_EQUIP_PETS] Skipping pet without Species field")
+			end
 		end
 	end
 	return pets
@@ -315,7 +314,7 @@ local function getDesiredPets()
 	local maxSlots = LocalPlayer:GetAttribute("MaxEquippedPets") or 1
 	print("[AUTO_EQUIP_PETS] Max equipped slots:", maxSlots)
 
-	-- Get all owned pets grouped by name (allow multiple per name)
+	-- Get all owned pets grouped by display name
 	local ownedPets = getOwnedPets()
 	local ownedByName = {}
 	for _, pet in ipairs(ownedPets) do
@@ -326,22 +325,35 @@ local function getDesiredPets()
 		print("[AUTO_EQUIP_PETS] Indexing owned pet by name:", pet.Name)
 	end
 
-	-- FIX: Build desired list by iterating through PRIORITY and finding first matching pet
+	-- Build desired list by matching PRIORITY against owned pets
 	local desired = {}
 	for _, name in ipairs(cfg.PRIORITY or {}) do
-		if #desired >= maxSlots then 
+		if #desired >= maxSlots then
 			print("[AUTO_EQUIP_PETS] Reached max slots, stopping priority iteration")
-			break 
+			break
 		end
 		if blacklistSet[name] then
 			print("[AUTO_EQUIP_PETS] Skipping blacklisted pet:", name)
-		elseif ownedByName[name] and #ownedByName[name] > 0 then
-			-- Pick the first owned pet with this name
-			local pet = ownedByName[name][1]
-			table.insert(desired, pet)
-			print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "GUID:", pet.Id)
 		else
-			print("[AUTO_EQUIP_PETS] Pet from PRIORITY not owned:", name)
+			-- Try by display name first, then by species as fallback
+			local pet = nil
+			if ownedByName[name] and #ownedByName[name] > 0 then
+				pet = ownedByName[name][1]
+			else
+				-- Fallback: look for a pet whose species matches the name directly
+				for _, p in ipairs(ownedPets) do
+					if p.Species == name then
+						pet = p
+						break
+					end
+				end
+			end
+			if pet then
+				table.insert(desired, pet)
+				print("[AUTO_EQUIP_PETS] Added to desired - Name:", pet.Name, "Species:", pet.Species)
+			else
+				print("[AUTO_EQUIP_PETS] Pet from PRIORITY not owned:", name)
+			end
 		end
 	end
 
@@ -351,50 +363,50 @@ end
 
 function syncPets()
 	local cfg = CFG.AUTO_EQUIP_PETS
-	if not cfg or not cfg.ENABLED then 
+	if not cfg or not cfg.ENABLED then
 		print("[AUTO_EQUIP_PETS] Sync disabled")
-		return 
+		return
 	end
 
 	print("[AUTO_EQUIP_PETS] ========== SYNC START ==========")
-	
+
 	local desired = getDesiredPets()
 	print("[AUTO_EQUIP_PETS] Desired pets:", #desired)
 	for _, pet in ipairs(desired) do
-		print("[AUTO_EQUIP_PETS]   - " .. pet.Name .. " (" .. pet.Id .. ")")
+		print("[AUTO_EQUIP_PETS]   - " .. pet.Name)
 	end
 
 	print("[AUTO_EQUIP_PETS] Currently equipped:")
-	for guid, pet in pairs(equippedCache) do
-		print("[AUTO_EQUIP_PETS]   - " .. pet.Name .. " (" .. guid .. ")")
+	for petName, petData in pairs(equippedCache) do
+		print("[AUTO_EQUIP_PETS]   - " .. petName)
 	end
 
-	-- Build a set of desired pet GUIDs for quick lookup
-	local desiredIds = {}
+	-- Build a set of desired pet names for quick lookup
+	local desiredNames = {}
 	for _, pet in ipairs(desired) do
-		desiredIds[pet.Id] = pet
+		desiredNames[pet.Name] = pet
 	end
 
-	-- Unequip pets that are NOT in desired list
-	for guid in pairs(equippedCache) do
-		if not desiredIds[guid] then
-			print("[AUTO_EQUIP_PETS] Unequipping pet GUID:", guid)
-			Networking.Pets.RequestUnequip:Fire(guid)
+	-- Unequip pets that are NOT in desired list (use RequestUnequipByName)
+	for petName in pairs(equippedCache) do
+		if not desiredNames[petName] then
+			print("[AUTO_EQUIP_PETS] Unequipping pet:", petName)
+			Networking.Pets.RequestUnequipByName:Fire(petName)
 			task.wait(0.2)
 		end
 	end
 
-	-- Equip desired pets that are NOT currently equipped
+	-- Equip desired pets that are NOT currently equipped (use RequestEquipByName)
 	for _, pet in ipairs(desired) do
-		if not equippedCache[pet.Id] then
-			print("[AUTO_EQUIP_PETS] Equipping pet by name:", pet.Name)
+		if not equippedCache[pet.Name] then
+			print("[AUTO_EQUIP_PETS] Equipping pet:", pet.Name)
 			Networking.Pets.RequestEquipByName:Fire(pet.Name)
 			task.wait(0.2)
 		else
 			print("[AUTO_EQUIP_PETS] Pet already equipped:", pet.Name)
 		end
 	end
-	
+
 	print("[AUTO_EQUIP_PETS] ========== SYNC END ==========")
 end
 
