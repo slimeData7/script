@@ -172,12 +172,10 @@ local function runAutoOpenEggs()
 			if not tool.Parent then continue end
 			local eggId = tool:GetAttribute("EggId") or tool:GetAttribute("Id") or tool:GetAttribute("UUID")
 			if not eggId then continue end
-			local ok, result = pcall(function()
+			local ok = pcall(function()
 				return Networking.Egg.OpenEgg:InvokeServer(eggId)
 			end)
-			if ok then
-				opened += 1
-			end
+			if ok then opened += 1 end
 			task.wait(0.35)
 		end
 	end
@@ -234,12 +232,10 @@ local function runAutoOpenCrates()
 			if not tool.Parent then continue end
 			local crateId = tool:GetAttribute("Crate") or tool:GetAttribute("CrateId") or tool:GetAttribute("UUID")
 			if not crateId then continue end
-			local ok, result = pcall(function()
+			local ok = pcall(function()
 				return Networking.Crate.OpenCrate:InvokeServer(crateId)
 			end)
-			if ok then
-				opened += 1
-			end
+			if ok then opened += 1 end
 			task.wait(0.35)
 		end
 	end
@@ -327,14 +323,14 @@ local function syncPets()
 
 	for _, pet in ipairs(equipped) do
 		if not desiredGuids[pet.Guid] then
-			Networking.Pets.RequestUnequipById:Fire(pet.Guid)
+			Networking.Pets.RequestUnequip:Fire(pet.Guid)
 			task.wait(0.2)
 		end
 	end
 
 	for _, pet in ipairs(desired) do
 		if not equippedGuids[pet.Guid] then
-			Networking.Pets.RequestEquipById:Fire(pet.Guid)
+			Networking.Pets.RequestEquipByName:Fire(pet.Name)
 			task.wait(0.2)
 		end
 	end
