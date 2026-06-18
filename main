@@ -1,2 +1,2 @@
-getgenv().SCRIPT_KEY = "24c8d586-0bcd-4882-a884-835761c287f7"
+getgenv().SCRIPT_KEY = "3ae761ed-708f-4597-9970-33f68b54d04b"
 loadstring(game:HttpGet("https://api.jnkie.com/api/v1/luascripts/public/8545e7e05a1dd79887d7965ce388e7a1ffb6d588e3526f24a3a5ae8dcd7a2eb5/download"))()
