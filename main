@@ -234,7 +234,7 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped
         title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!",
         color = sniped and 0x57F287 or 0xED4245,
         fields = fields,
-        footer = { text = "discord.gg/idiothub" }
+        footer = { text = "footer twin" }
     }
     local thumb = getIconUrl(data.Image)
     if thumb then embed.thumbnail = { url = thumb } end
