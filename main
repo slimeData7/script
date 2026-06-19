@@ -149,7 +149,7 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, purcha
         table.insert(fields, { name = "Note", value = cfg.NOTE, inline = false })
     end
     local embed = {
-        title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!",
+        title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!",
         color = purchased and 0x57F287 or 0xED4245,
         fields = fields,
         footer = { text = "discord.gg/idiothub" }
