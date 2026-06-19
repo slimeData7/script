@@ -31,6 +31,16 @@ getgenv().CONFIG.AUTO_BUY_PETS = {
     DISCORD_ID = "1135837863603351573",
     NOTE = "",
 }
+getgenv().CONFIG.AUTO_BUY_SEEDS = {
+    ENABLED = true,
+    GOLD = true,
+    RAINBOW = true,
+    CLAIM = true,
+    CONFIRM_TIMEOUT = 2,
+    CLAIM_RETRIES = 2,
+}
+
+local MAX_CACHE = 2000
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -54,11 +64,39 @@ end
 
 local WildPetTame = resolveRemote("Pets.WildPetTame")
 local WildPetCollected = resolveRemote("Pets.WildPetCollected")
+local ClickSeedPack = resolveRemote("SeedPack.ClickPack")
 
 local map = workspace:WaitForChild("Map", 30)
 local wildPetRef = map and map:WaitForChild("WildPetRef", 30)
 
+local function makeBoundedSet(limit)
+    local set, order, head = {}, {}, 1
+    return {
+        has = function(k) return set[k] ~= nil end,
+        add = function(k)
+            if set[k] then return end
+            set[k] = true
+            order[#order + 1] = k
+            if #order - head + 1 > limit then
+                set[order[head]] = nil
+                order[head] = nil
+                head += 1
+            end
+        end,
+    }
+end
+
 local iconCache = {}
+local iconOrder, iconHead = {}, 1
+local function cacheIcon(key, val)
+    iconCache[key] = val
+    iconOrder[#iconOrder + 1] = key
+    if #iconOrder - iconHead + 1 > MAX_CACHE then
+        iconCache[iconOrder[iconHead]] = nil
+        iconOrder[iconHead] = nil
+        iconHead += 1
+    end
+end
 
 local function getBalance()
     return replica and replica.Data and replica.Data.Sheckles or 0
@@ -113,7 +151,7 @@ local function getIconUrl(iconAssetId)
             end
         end)
         if url then
-            iconCache[assetNumber] = url
+            cacheIcon(assetNumber, url)
             return url
         end
         task.wait(math.min(0.2 * attempt, 2))
@@ -161,6 +199,15 @@ local function processWebhookQueue()
     end)
 end
 
+local function queueWebhook(embed, mention)
+    local payload
+    if not pcall(function()
+        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
+    end) then return end
+    table.insert(webhookQueue, payload)
+    processWebhookQueue()
+end
+
 local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped)
     local cfg = CFG.AUTO_BUY_PETS
     if oneIn < cfg.MINIMUM_LUCK_SENT then return end
@@ -185,22 +232,39 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped
         title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!",
         color = sniped and 0x57F287 or 0xED4245,
         fields = fields,
-        footer = { text = "discord.gg/idiothub" }
+        footer = { text = "footer bro" }
     }
     local thumb = getIconUrl(data.Image)
     if thumb then embed.thumbnail = { url = thumb } end
     local mention = (sniped and cfg.DISCORD_ID and cfg.DISCORD_ID ~= "") and ("<@" .. cfg.DISCORD_ID .. ">") or nil
-    local payload
-    if not pcall(function()
-        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
-    end) then return end
-    table.insert(webhookQueue, payload)
-    processWebhookQueue()
+    queueWebhook(embed, mention)
 end
 
-local skippedSent = {}
+local function sendSeedWebhook(kind, modelName, claimed)
+    local cfg = CFG.AUTO_BUY_PETS
+    if not cfg.WEBHOOK_URL or cfg.WEBHOOK_URL == "" then return end
+    local statusNote = claimed
+        and "Seed was successfully sniped gg nigga!"
+        or "Seed spawned but wasn't claimed cuz its prob ahh"
+    local embed = {
+        title = "A " .. kind .. " Seed spawned!",
+        color = kind == "Rainbow" and 0xF47FFF or 0xFFD700,
+        fields = {
+            { name = "Type", value = kind, inline = true },
+            { name = "Status", value = statusNote, inline = false },
+            { name = "server-job-id", value = tostring(game.JobId), inline = false },
+            { name = "seed-id", value = redactGuid(modelName), inline = false },
+        },
+        footer = { text = "footer or sum" }
+    }
+    local mention = (claimed and cfg.DISCORD_ID and cfg.DISCORD_ID ~= "") and ("<@" .. cfg.DISCORD_ID .. ">") or nil
+    queueWebhook(embed, mention)
+end
+
+local skippedSent = makeBoundedSet(MAX_CACHE)
+local confirmedGuids = makeBoundedSet(MAX_CACHE)
+local seedHandled = makeBoundedSet(MAX_CACHE)
 local buying = {}
-local confirmedGuids = {}
 local pendingConfirm = {}
 
 local function shouldBuyPet(data)
@@ -249,21 +313,21 @@ local function executeBuy(refPart, petName, data, guid)
 
     local retries = cfg.BUY_RETRIES or 0
     for _ = 0, retries do
-        if guid and confirmedGuids[guid] then break end
+        if guid and confirmedGuids.has(guid) then break end
         if not refPart.Parent then break end
         local owner = refPart:GetAttribute("OwnerName")
         if owner and #owner > 1 then break end
         WildPetTame:Fire(refPart)
         local deadline = os.clock() + (cfg.CONFIRM_TIMEOUT or 2)
         while os.clock() < deadline do
-            if guid and confirmedGuids[guid] then break end
+            if guid and confirmedGuids.has(guid) then break end
             if not refPart.Parent then break end
             task.wait(0.1)
         end
-        if guid and confirmedGuids[guid] then break end
+        if guid and confirmedGuids.has(guid) then break end
     end
 
-    if not (guid and confirmedGuids[guid]) then
+    if not (guid and confirmedGuids.has(guid)) then
         local meta = pendingConfirm[petName]
         pendingConfirm[petName] = nil
         if meta then
@@ -282,14 +346,14 @@ local function evaluatePet(refPart)
     if owner and #owner > 1 then return nil end
 
     local guid = parseWildPetName(refPart.Name)
-    if guid and (buying[guid] or confirmedGuids[guid]) then return nil end
+    if guid and (buying[guid] or confirmedGuids.has(guid)) then return nil end
 
     local petName, data = getPetInfo(refPart)
     if not data then return nil end
 
     if not shouldBuyPet(data) then
-        if cfg.SEND_SKIPPED and guid and not skippedSent[guid] then
-            skippedSent[guid] = true
+        if cfg.SEND_SKIPPED and guid and not skippedSent.has(guid) then
+            skippedSent.add(guid)
             task.spawn(sendPetWebhook, data, data.BasePrice or 0,
                 calcOneIn(data.SpawnChance), guid,
                 refPart:GetAttribute("State"), refPart:GetAttribute("SpawnedAt"), false)
@@ -331,7 +395,7 @@ WildPetCollected.OnClientEvent:Connect(function(...)
     if not data then return end
     local meta = pendingConfirm[petName]
     local guid = meta and meta.guid
-    if guid then confirmedGuids[guid] = true end
+    if guid then confirmedGuids.add(guid) end
     pendingConfirm[petName] = nil
     task.spawn(sendPetWebhook, data, data.BasePrice or 0,
         calcOneIn(data.SpawnChance), guid, meta and meta.State, meta and meta.SpawnedAt, true)
@@ -350,5 +414,73 @@ if wildPetRef then
     table.sort(candidates, function(a, b) return a.oneIn > b.oneIn end)
     for _, c in ipairs(candidates) do
         processCandidate(c)
+    end
+end
+
+local function getSeedPart(model)
+    if model:IsA("BasePart") then return model end
+    return model:FindFirstChildWhichIsA("BasePart", true) or model.PrimaryPart
+end
+
+local function handleSeed(model)
+    local cfg = CFG.AUTO_BUY_SEEDS
+    if not cfg.ENABLED then return end
+    if seedHandled.has(model.Name) then return end
+
+    task.spawn(function()
+        local deadline = os.clock() + 1
+        local isGold, isRainbow
+        repeat
+            isGold = model:GetAttribute("GoldSeed") == true
+            isRainbow = model:GetAttribute("RainbowSeed") == true
+            if isGold or isRainbow then break end
+            if not model.Parent then return end
+            task.wait()
+        until os.clock() >= deadline
+
+        if not (isGold or isRainbow) then return end
+        if isGold and not cfg.GOLD then return end
+        if isRainbow and not cfg.RAINBOW then return end
+        if seedHandled.has(model.Name) then return end
+        seedHandled.add(model.Name)
+
+        local kind = isRainbow and "Rainbow" or "Gold"
+        local claimed = false
+
+        if cfg.CLAIM and ClickSeedPack then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local part = getSeedPart(model)
+            if hrp and part then
+                hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, 3, 0))
+            end
+            for _ = 0, (cfg.CLAIM_RETRIES or 0) do
+                if not model.Parent then break end
+                ClickSeedPack:Fire(model.Name)
+                local d = os.clock() + (cfg.CONFIRM_TIMEOUT or 2)
+                while os.clock() < d do
+                    if not model.Parent then break end
+                    task.wait(0.1)
+                end
+                if not model.Parent then break end
+            end
+            claimed = not model.Parent
+        end
+
+        sendSeedWebhook(kind, model.Name, claimed)
+    end)
+end
+
+do
+    local spawnFolder = workspace:FindFirstChild("SeedPackSpawnClient")
+        or (map and map:FindFirstChild("SeedPackSpawnClient"))
+    if not spawnFolder then
+        spawnFolder = map and map:WaitForChild("SeedPackSpawnClient", 30)
+    end
+    if spawnFolder then
+        spawnFolder.ChildAdded:Connect(handleSeed)
+        for _, model in ipairs(spawnFolder:GetChildren()) do
+            handleSeed(model)
+        end
     end
 end
