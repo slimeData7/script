@@ -69,7 +69,10 @@ local AUTO_BUY_PETS = {
         "Black Dragon",
         "Ice Serpent",
     },
-    RARITIES = {},
+    RARITIES = {
+        "Mythic",
+        "Secret",
+    },
     MINIMUM_LUCK_SENT = 0,
     SEND_SKIPPED = true,
     CONFIRM_TIMEOUT = 2,
@@ -260,15 +263,18 @@ local function queueWebhook(embed, mention)
 end
 
 local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped)
+    if not data then return end
+    oneIn = oneIn or 0
     if oneIn < AUTO_BUY_PETS.MINIMUM_LUCK_SENT then return end
     if AUTO_BUY_PETS.WEBHOOK_URL == "" then return end
-    local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
+    local display = tostring(data.DisplayName or "Unknown")
+    local article = display:match("^[AEIOUaeiou]") and "an" or "a"
     local statusNote = sniped
         and "Pet was successfully sniped gg nigga!"
         or "Pet was spawned but has not been sniped cuz its prob ahh"
     local fields = {
         { name = "Price", value = formatNumber(price), inline = true },
-        { name = "Rarity", value = tostring(data.Rarity), inline = true },
+        { name = "Rarity", value = tostring(data.Rarity or "N/A"), inline = true },
         { name = "State", value = tostring(state or "N/A"), inline = true },
         { name = "Spawned At", value = spawnedAt and ("<t:" .. math.floor(spawnedAt) .. ":R>") or "N/A", inline = true },
         { name = "Status", value = statusNote, inline = false },
@@ -279,7 +285,7 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped
         table.insert(fields, { name = "Note", value = AUTO_BUY_PETS.NOTE, inline = false })
     end
     local embed = {
-        title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!",
+        title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. display .. "!",
         color = sniped and 0x57F287 or 0xED4245,
         fields = fields,
         footer = { text = "footer twin" }
@@ -295,13 +301,33 @@ local confirmedGuids = makeBoundedSet(MAX_CACHE)
 local buying = {}
 local pendingConfirm = {}
 
-local function shouldBuyPet(data)
-    for _, name in ipairs(AUTO_BUY_PETS.NAMES) do
-        if data.DisplayName == name then return true end
+local function norm(s)
+    return tostring(s):lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local nameList = {}
+for _, n in ipairs(AUTO_BUY_PETS.NAMES) do
+    local v = norm(n)
+    if v ~= "" then nameList[#nameList + 1] = v end
+end
+local raritySet = {}
+for _, r in ipairs(AUTO_BUY_PETS.RARITIES) do raritySet[norm(r)] = true end
+
+local function nameMatches(target)
+    target = norm(target)
+    if target == "" then return false end
+    for _, cfg in ipairs(nameList) do
+        if target == cfg or target:find(cfg, 1, true) or cfg:find(target, 1, true) then
+            return true
+        end
     end
-    for _, rarity in ipairs(AUTO_BUY_PETS.RARITIES) do
-        if data.Rarity == rarity then return true end
-    end
+    return false
+end
+
+local function shouldBuyPet(petName, data)
+    if nameMatches(petName) then return true end
+    if nameMatches(data.DisplayName) then return true end
+    if data.Rarity and raritySet[norm(data.Rarity)] then return true end
     return false
 end
 
@@ -375,7 +401,7 @@ local function evaluatePet(refPart)
     local petName, data = getPetInfo(refPart)
     if not data then return nil end
 
-    if not shouldBuyPet(data) then
+    if not shouldBuyPet(petName, data) then
         if AUTO_BUY_PETS.SEND_SKIPPED and guid and not skippedSent.has(guid) then
             skippedSent.add(guid)
             task.spawn(sendPetWebhook, data, data.BasePrice or 0,
@@ -384,9 +410,6 @@ local function evaluatePet(refPart)
         end
         return nil
     end
-
-    local price = refPart:GetAttribute("Price") or data.BasePrice
-    if not price or getBalance() < price then return nil end
 
     return {
         refPart = refPart,
@@ -416,14 +439,15 @@ end
 WildPetCollected.OnClientEvent:Connect(function(...)
     local petName = select(2, ...)
     if not petName then return end
+    local meta = pendingConfirm[petName]
+    if not meta then return end
     local data = PetData[petName]
     if not data then return end
-    local meta = pendingConfirm[petName]
-    local guid = meta and meta.guid
+    local guid = meta.guid
     if guid then confirmedGuids.add(guid) end
     pendingConfirm[petName] = nil
     task.spawn(sendPetWebhook, data, data.BasePrice or 0,
-        calcOneIn(data.SpawnChance), guid, meta and meta.State, meta and meta.SpawnedAt, true)
+        calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, true)
 end)
 
 local function runScan()
