@@ -1,13 +1,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = game:GetService("Players").LocalPlayer
-local PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
 local PRUNE_KEEP = {
-    [ReplicatedStorage] = {
-        "SharedData.PetData",
-        "SharedModules.Networking",
-    },
     [Workspace] = {
         "Map.WildPetRef",
         "Map.WildPetSpawns",
@@ -15,7 +10,6 @@ local PRUNE_KEEP = {
         "_PetVisualClient",
         "_PetVisualClient.Models",
     },
-    [PlayerGui] = {},
 }
 
 local PRUNE_FORCE_KEEP = {
@@ -54,7 +48,7 @@ end
 for _, inst in ipairs(PRUNE_FORCE_KEEP) do protect(inst) end
 
 local count = 0
-for _, root in ipairs({ ReplicatedStorage, Workspace, PlayerGui }) do
+for _, root in ipairs({ Workspace }) do
     if not root then continue end
     for _, inst in ipairs(root:GetDescendants()) do
         local parent = inst.Parent
