@@ -133,8 +133,8 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, purcha
     if not cfg.WEBHOOK_URL or cfg.WEBHOOK_URL == "" then return end
     local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
     local statusNote = purchased
-        and "Pet was successfully purchased !"
-        or "Pet was spawned but has not been purchased due to config"
+        and "Pet was successfully sniped gg nigga!"
+        or "Pet was spawned but has not been purchased cuz its prob ahh"
     local fields = {
         { name = "Player", value = "||" .. LocalPlayer.Name .. "||", inline = true },
         { name = "Price", value = formatNumber(price), inline = true },
