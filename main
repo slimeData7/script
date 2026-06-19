@@ -1,7 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = game:GetService("Players").LocalPlayer
-local PlayerScripts = LocalPlayer:FindFirstChildOfClass("PlayerScripts")
 local PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
 local PRUNE_KEEP = {
@@ -15,17 +14,6 @@ local PRUNE_KEEP = {
         "Map.Baseplate",
         "_PetVisualClient",
         "_PetVisualClient.Models",
-    },
-    [PlayerScripts] = {
-        "Controllers.SpawnPetController",
-        "Controllers.PetBehaviors.Index",
-        "Controllers.PetBehaviors.BehaviorBase",
-        "Controllers.PetBehaviors.StealFruit",
-        "Controllers.PetBehaviors.DefendGarden",
-        "Controllers.PetBehaviors.PickFruit",
-        "Controllers.PetBehaviors.BlackDragonDefend",
-        "Controllers.PetBehaviors.IceSerpentDefend",
-        "Controllers.RaccoonHandleController",
     },
     [PlayerGui] = {},
 }
@@ -66,7 +54,7 @@ end
 for _, inst in ipairs(PRUNE_FORCE_KEEP) do protect(inst) end
 
 local count = 0
-for _, root in ipairs({ ReplicatedStorage, Workspace, PlayerScripts, PlayerGui }) do
+for _, root in ipairs({ ReplicatedStorage, Workspace, PlayerGui }) do
     if not root then continue end
     for _, inst in ipairs(root:GetDescendants()) do
         local parent = inst.Parent
