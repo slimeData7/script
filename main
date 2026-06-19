@@ -1,13 +1,15 @@
-for _, conn in pairs(getconnections(game.Players.LocalPlayer.Idled)) do
-    conn:Disable()
-end
+for _, x in pairs(getconnections(game.Players.LocalPlayer.Idled)) do x:Disable() end
 
-local VirtualUser = game:GetService("VirtualUser")
-
-game.Players.LocalPlayer.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new())
+local bb = game:GetService('VirtualUser')
+game:GetService("Players").LocalPlayer.Idled:connect(function()
+    bb:CaptureController()
+    bb:ClickButton2(Vector2.new())
 end)
+
+local _env = (getgenv and getgenv()) or _G
+if _env.__IdiotHubExecuted then return end
+_env.__IdiotHubExecuted = true
+
 getgenv().CONFIG = getgenv().CONFIG or {}
 getgenv().CONFIG.AUTO_BUY_PETS = {
     ENABLED = true,
@@ -154,7 +156,7 @@ local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, purcha
     }
     local thumb = getIconUrl(data.Image)
     if thumb then embed.thumbnail = { url = thumb } end
-    local mention = (cfg.DISCORD_ID and cfg.DISCORD_ID ~= "") and ("<@" .. cfg.DISCORD_ID .. ">") or nil
+    local mention = (purchased and cfg.DISCORD_ID and cfg.DISCORD_ID ~= "") and ("<@" .. cfg.DISCORD_ID .. ">") or nil
     local payload
     if not pcall(function()
         payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
