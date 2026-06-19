@@ -1,13 +1,81 @@
-for _, x in pairs(getconnections(game.Players.LocalPlayer.Idled)) do x:Disable() end
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local PlayerScripts = LocalPlayer:FindFirstChildOfClass("PlayerScripts")
+local PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
-local bb = game:GetService('VirtualUser')
-game:GetService("Players").LocalPlayer.Idled:connect(function()
-    bb:CaptureController()
-    bb:ClickButton2(Vector2.new())
-end)
+local PRUNE_KEEP = {
+    [ReplicatedStorage] = {
+        "SharedData.PetData",
+        "SharedModules.Networking",
+    },
+    [Workspace] = {
+        "Map.WildPetRef",
+        "Map.WildPetSpawns",
+        "Map.Baseplate",
+        "_PetVisualClient",
+        "_PetVisualClient.Models",
+    },
+    [PlayerScripts] = {
+        "Controllers.SpawnPetController",
+        "Controllers.PetBehaviors.Index",
+        "Controllers.PetBehaviors.BehaviorBase",
+        "Controllers.PetBehaviors.StealFruit",
+        "Controllers.PetBehaviors.DefendGarden",
+        "Controllers.PetBehaviors.PickFruit",
+        "Controllers.PetBehaviors.BlackDragonDefend",
+        "Controllers.PetBehaviors.IceSerpentDefend",
+        "Controllers.RaccoonHandleController",
+    },
+    [PlayerGui] = {},
+}
 
-if _G.__IdiotHubExecuted then return end
-_G.__IdiotHubExecuted = true
+local PRUNE_FORCE_KEEP = {
+    Workspace.CurrentCamera,
+    Workspace:FindFirstChildOfClass("Terrain"),
+    LocalPlayer.Character,
+}
+
+local protected = {}
+local function protect(inst)
+    if not inst then return end
+    protected[inst] = true
+    for _, d in ipairs(inst:GetDescendants()) do protected[d] = true end
+    local p = inst.Parent
+    while p do protected[p] = true p = p.Parent end
+end
+
+local function resolve(root, path)
+    local node = root
+    for name in string.gmatch(path, "[^%.]+") do
+        if not node then return nil end
+        node = node:FindFirstChild(name)
+    end
+    return node
+end
+
+for root, paths in pairs(PRUNE_KEEP) do
+    if root then
+        protected[root] = true
+        for _, path in ipairs(paths) do
+            local inst = resolve(root, path)
+            if inst then protect(inst) end
+        end
+    end
+end
+for _, inst in ipairs(PRUNE_FORCE_KEEP) do protect(inst) end
+
+local count = 0
+for _, root in ipairs({ ReplicatedStorage, Workspace, PlayerScripts, PlayerGui }) do
+    if not root then continue end
+    for _, inst in ipairs(root:GetDescendants()) do
+        local parent = inst.Parent
+        if parent and protected[parent] and not protected[inst] then
+            pcall(function() inst:Destroy() end)
+            count += 1
+        end
+    end
+end
 
 local AUTO_BUY_PETS = {
     ENABLED = true,
@@ -43,12 +111,10 @@ local HOP = {
 local MAX_CACHE = 2000
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Lighting = game:GetService("Lighting")
 
-local LocalPlayer = Players.LocalPlayer
 local placeId = game.PlaceId
 local accountKey = tostring(LocalPlayer.UserId)
 
