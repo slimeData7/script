@@ -23,21 +23,11 @@ local TELEPORT_THRESHOLD_SQ = 16
 local SPRINKLER_DETECT_RANGE_SQ = 15 * 15
 local WILD_PET_TIMEOUT = 2
 
-local SESSION_START = os.time()
-
 local function getExecutor()
 	if _G.identifyexecutor then
 		return _G.identifyexecutor()
 	end
 	return "Unknown"
-end
-
-local function formatSessionTime()
-	local elapsed = os.time() - SESSION_START
-	local hours = math.floor(elapsed / 3600)
-	local minutes = math.floor((elapsed % 3600) / 60)
-	local seconds = elapsed % 60
-	return string.format("%02d:%02d:%02d", hours, minutes, seconds)
 end
 
 local function debugLog(tag, ...)
@@ -320,21 +310,6 @@ Tabs.Main:AddParagraph({
 	Title = "Executor",
 	Content = getExecutor()
 })
-
-Tabs.Main:AddParagraph({
-	Title = "Session Time",
-	Content = formatSessionTime()
-})
-
-task.spawn(function()
-	while true do
-		task.wait(1)
-		local stat = Tabs.Main:AddParagraph({
-			Title = "Session Time",
-			Content = formatSessionTime()
-		})
-	end
-end)
 
 Tabs.Main:AddParagraph({
 	Title = "Credits",
