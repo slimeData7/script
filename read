@@ -5,16 +5,28 @@ local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/
 local SharedModules = ReplicatedStorage:WaitForChild("SharedModules")
 local SharedData = ReplicatedStorage:WaitForChild("SharedData")
 
-local MutationData = require(SharedModules:WaitForChild("MutationData"))
 local SeedData = require(SharedModules:WaitForChild("SeedData"))
 local SellValueData = require(SharedModules:WaitForChild("SellValueData"))
 local PetData = require(SharedData:WaitForChild("PetData"))
 local CrateData = require(SharedModules:WaitForChild("CrateData"))
 local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
 
-local MUTATIONS = { "Gold", "Rainbow", "Electric", "Frozen", "Bloodlit", "Chained", "Starstruck" }
+getgenv().IdiotHubDebug = getgenv().IdiotHubDebug or true
+
+local function debugLog(tag, ...)
+    if not getgenv().IdiotHubDebug then return end
+    print("[IdiotHub]", "[" .. tag .. "]", ...)
+end
+
+local function debugWarn(tag, ...)
+    if not getgenv().IdiotHubDebug then return end
+    warn("[IdiotHub]", "[" .. tag .. "]", ...)
+end
+
+local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
 
 local function withAll(list)
+    table.sort(list)
     table.insert(list, 1, "All")
     return list
 end
@@ -43,7 +55,6 @@ local function GetSeedNames()
         for _, seed in ipairs(SeedData) do
             table.insert(list, seed.SeedName)
         end
-        table.sort(list)
         return list
     end)
 end
@@ -54,7 +65,6 @@ local function GetFruitNames()
         for name in pairs(SellValueData) do
             table.insert(list, name)
         end
-        table.sort(list)
         return list
     end)
 end
@@ -68,7 +78,6 @@ local function GetPetRarities()
                 table.insert(list, pet.Rarity)
             end
         end
-        table.sort(list)
         return list
     end)
 end
@@ -81,7 +90,6 @@ local function GetPetNames()
                 table.insert(list, pet.DisplayName)
             end
         end
-        table.sort(list)
         return list
     end)
 end
@@ -92,7 +100,6 @@ local function GetCrateNames()
         for _, crate in ipairs(CrateData.GetAllCrates()) do
             table.insert(list, type(crate) == "table" and crate.Name or crate)
         end
-        table.sort(list)
         return list
     end)
 end
@@ -103,12 +110,11 @@ local function GetGearNames()
         for _, gear in ipairs(GearShopData.Data) do
             table.insert(list, gear.ItemName)
         end
-        table.sort(list)
         return list
     end)
 end
 
-local function HandleAllSelection(dropdown, values)
+local function HandleAllSelection(dropdown, values, label)
     dropdown:OnChanged(function()
         local selected = dropdown.Value
         if selected["All"] then
@@ -120,7 +126,15 @@ local function HandleAllSelection(dropdown, values)
             end
             dropdown:SetValue(full)
         end
+        debugLog(label or "Dropdown", "changed")
     end)
+end
+
+local function logToggle(name)
+    return function()
+        local state = Fluent.Options[name] and Fluent.Options[name].Value
+        debugLog(name, "toggled to", tostring(state))
+    end
 end
 
 local Window = Fluent:CreateWindow({
@@ -139,13 +153,12 @@ local Tabs = {
     Selling = Window:AddTab({ Title = "Selling", Icon = "coins" }),
     Buying = Window:AddTab({ Title = "Buying", Icon = "shopping-cart" }),
     Pets = Window:AddTab({ Title = "Pets", Icon = "paw-print" }),
+    Sniper = Window:AddTab({ Title = "Sniper", Icon = "crosshair" }),
     Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
-    Weather = Window:AddTab({ Title = "Weather", Icon = "cloud" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
 local Options = Fluent.Options
-
 Tabs.Main:AddParagraph({
     Title = "Script Version",
     Content = "IdiotHub 1.0.1"
@@ -170,20 +183,11 @@ Tabs.Main:AddButton({
     Title = "Copy Discord Invite",
     Callback = function()
         setclipboard("https://discord.gg/idiothub")
+        debugLog("Main", "Discord invite copied to clipboard")
     end
 })
 
 Tabs.Farming:AddParagraph({ Title = "Auto Harvest", Content = "" })
-
-Tabs.Farming:AddToggle("HarvestEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-
-Tabs.Farming:AddToggle("HarvestInstantMutated", {
-    Title = "Instant Collect Mutated",
-    Default = false
-})
 
 local HarvestMutationValues = GetMutationNames()
 local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
@@ -192,28 +196,30 @@ local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues)
+HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues, "HarvestMutations")
 
-local HarvestVariantValues = withAll({ "Normal", "Shiny", "Giant" })
+local HarvestVariantValues = withAll({ "Giant", "Normal", "Shiny" })
 local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
     Title = "Variants To Collect",
     Values = HarvestVariantValues,
     Multi = true,
     Default = {}
 })
-HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues)
+HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
+
+Tabs.Farming:AddToggle("HarvestInstantMutated", {
+    Title = "Collect Mutated Fruit Instantly",
+    Default = false
+})
+Options.HarvestInstantMutated:OnChanged(logToggle("HarvestInstantMutated"))
+
+Tabs.Farming:AddToggle("HarvestEnabled", {
+    Title = "Enable Auto Harvest",
+    Default = false
+})
+Options.HarvestEnabled:OnChanged(logToggle("HarvestEnabled"))
 
 Tabs.Farming:AddParagraph({ Title = "Auto Plant", Content = "" })
-
-Tabs.Farming:AddToggle("PlantEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-
-Tabs.Farming:AddToggle("PlantIgnorePosition", {
-    Title = "Ignore Position",
-    Default = false
-})
 
 local PlantSeedValues = GetSeedNames()
 local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
@@ -222,15 +228,7 @@ local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(PlantSeedsDropdown, PlantSeedValues)
-
-Tabs.Farming:AddInput("PlantAmount", {
-    Title = "Plant Amount",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
+HandleAllSelection(PlantSeedsDropdown, PlantSeedValues, "PlantSeeds")
 
 local PlantIgnoreValues = GetFruitNames()
 local PlantIgnoreDropdown = Tabs.Farming:AddDropdown("PlantIgnoreCrops", {
@@ -239,37 +237,39 @@ local PlantIgnoreDropdown = Tabs.Farming:AddDropdown("PlantIgnoreCrops", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(PlantIgnoreDropdown, PlantIgnoreValues)
+HandleAllSelection(PlantIgnoreDropdown, PlantIgnoreValues, "PlantIgnoreCrops")
+
+Tabs.Farming:AddToggle("PlantEnabled", {
+    Title = "Enable Auto Plant",
+    Default = false
+})
+Options.PlantEnabled:OnChanged(logToggle("PlantEnabled"))
 
 Tabs.Farming:AddParagraph({ Title = "Auto Sprinkler", Content = "" })
 
-Tabs.Farming:AddToggle("SprinklerEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-
-local SprinklersToUseValues = withAll({ "Basic Sprinkler", "Advanced Sprinkler", "Godly Sprinkler" })
+local SprinklersToUseValues = withAll({ "Advanced Sprinkler", "Basic Sprinkler", "Godly Sprinkler" })
 local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
     Title = "Sprinklers To Use",
     Values = SprinklersToUseValues,
     Multi = true,
     Default = {}
 })
-HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues)
+HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues, "SprinklersToUse")
 
-Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
-
-Tabs.Selling:AddToggle("SellEnabled", {
-    Title = "Enabled",
+Tabs.Farming:AddToggle("SprinklerEnabled", {
+    Title = "Enable Auto Sprinkler",
     Default = false
 })
+Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled"))
+Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
 
 Tabs.Selling:AddDropdown("SellMode", {
-    Title = "Mode",
-    Values = { "Sell All", "Sell Selected", "Keep Favorites" },
+    Title = "Sell Mode",
+    Values = { "Keep Favorites", "Sell All", "Sell Selected" },
     Multi = false,
     Default = 1
 })
+Options.SellMode:OnChanged(logToggle("SellMode"))
 
 local SellFruitValues = GetFruitNames()
 local SellFruitsDropdown = Tabs.Selling:AddDropdown("SellFruits", {
@@ -278,29 +278,31 @@ local SellFruitsDropdown = Tabs.Selling:AddDropdown("SellFruits", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(SellFruitsDropdown, SellFruitValues)
+HandleAllSelection(SellFruitsDropdown, SellFruitValues, "SellFruits")
 
 Tabs.Selling:AddInput("SellDelay", {
-    Title = "Sell Delay",
+    Title = "Sell Delay (Seconds)",
     Default = "1",
     Placeholder = "Seconds",
     Numeric = true,
     Finished = true
 })
 
-Tabs.Selling:AddParagraph({ Title = "Auto Favorite", Content = "" })
-
-Tabs.Selling:AddToggle("FavoriteEnabled", {
-    Title = "Enabled",
+Tabs.Selling:AddToggle("SellEnabled", {
+    Title = "Enable Auto Sell",
     Default = false
 })
+Options.SellEnabled:OnChanged(logToggle("SellEnabled"))
+
+Tabs.Selling:AddParagraph({ Title = "Auto Favorite", Content = "" })
 
 Tabs.Selling:AddDropdown("FavoriteChecks", {
-    Title = "Checks",
-    Values = { "Mutation", "Variant", "Sell Price" },
+    Title = "Favorite Conditions",
+    Values = { "Mutation", "Sell Price", "Variant" },
     Multi = true,
     Default = {}
 })
+Options.FavoriteChecks:OnChanged(logToggle("FavoriteChecks"))
 
 local FavoriteMutationValues = GetMutationNames()
 local FavoriteMutationsDropdown = Tabs.Selling:AddDropdown("FavoriteMutations", {
@@ -309,7 +311,7 @@ local FavoriteMutationsDropdown = Tabs.Selling:AddDropdown("FavoriteMutations", 
     Multi = true,
     Default = {}
 })
-HandleAllSelection(FavoriteMutationsDropdown, FavoriteMutationValues)
+HandleAllSelection(FavoriteMutationsDropdown, FavoriteMutationValues, "FavoriteMutations")
 
 Tabs.Selling:AddInput("FavoriteMinPrice", {
     Title = "Minimum Sell Price",
@@ -319,12 +321,12 @@ Tabs.Selling:AddInput("FavoriteMinPrice", {
     Finished = true
 })
 
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Seeds", Content = "" })
-
-Tabs.Buying:AddToggle("BuySeedsEnabled", {
-    Title = "Enabled",
+Tabs.Selling:AddToggle("FavoriteEnabled", {
+    Title = "Enable Auto Favorite",
     Default = false
 })
+Options.FavoriteEnabled:OnChanged(logToggle("FavoriteEnabled"))
+Tabs.Buying:AddParagraph({ Title = "Auto Buy Seeds", Content = "" })
 
 local BuySeedValues = GetSeedNames()
 local SeedsToBuyDropdown = Tabs.Buying:AddDropdown("SeedsToBuy", {
@@ -333,7 +335,7 @@ local SeedsToBuyDropdown = Tabs.Buying:AddDropdown("SeedsToBuy", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(SeedsToBuyDropdown, BuySeedValues)
+HandleAllSelection(SeedsToBuyDropdown, BuySeedValues, "SeedsToBuy")
 
 Tabs.Buying:AddInput("AmountPerSeed", {
     Title = "Amount Per Seed",
@@ -343,12 +345,13 @@ Tabs.Buying:AddInput("AmountPerSeed", {
     Finished = true
 })
 
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Gears", Content = "" })
-
-Tabs.Buying:AddToggle("BuyGearsEnabled", {
-    Title = "Enabled",
+Tabs.Buying:AddToggle("BuySeedsEnabled", {
+    Title = "Enable Auto Buy Seeds",
     Default = false
 })
+Options.BuySeedsEnabled:OnChanged(logToggle("BuySeedsEnabled"))
+
+Tabs.Buying:AddParagraph({ Title = "Auto Buy Gears", Content = "" })
 
 local BuyGearValues = GetGearNames()
 local GearsToBuyDropdown = Tabs.Buying:AddDropdown("GearsToBuy", {
@@ -357,7 +360,7 @@ local GearsToBuyDropdown = Tabs.Buying:AddDropdown("GearsToBuy", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(GearsToBuyDropdown, BuyGearValues)
+HandleAllSelection(GearsToBuyDropdown, BuyGearValues, "GearsToBuy")
 
 Tabs.Buying:AddInput("AmountPerGear", {
     Title = "Amount Per Gear",
@@ -367,12 +370,13 @@ Tabs.Buying:AddInput("AmountPerGear", {
     Finished = true
 })
 
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Crates", Content = "" })
-
-Tabs.Buying:AddToggle("BuyCratesEnabled", {
-    Title = "Enabled",
+Tabs.Buying:AddToggle("BuyGearsEnabled", {
+    Title = "Enable Auto Buy Gears",
     Default = false
 })
+Options.BuyGearsEnabled:OnChanged(logToggle("BuyGearsEnabled"))
+
+Tabs.Buying:AddParagraph({ Title = "Auto Buy Crates", Content = "" })
 
 local BuyCrateValues = GetCrateNames()
 local CratesToBuyDropdown = Tabs.Buying:AddDropdown("CratesToBuy", {
@@ -381,7 +385,7 @@ local CratesToBuyDropdown = Tabs.Buying:AddDropdown("CratesToBuy", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(CratesToBuyDropdown, BuyCrateValues)
+HandleAllSelection(CratesToBuyDropdown, BuyCrateValues, "CratesToBuy")
 
 Tabs.Buying:AddInput("AmountPerCrate", {
     Title = "Amount Per Crate",
@@ -391,27 +395,28 @@ Tabs.Buying:AddInput("AmountPerCrate", {
     Finished = true
 })
 
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Slots", Content = "" })
-
-Tabs.Buying:AddToggle("BuySlotsEnabled", {
-    Title = "Enabled",
+Tabs.Buying:AddToggle("BuyCratesEnabled", {
+    Title = "Enable Auto Buy Crates",
     Default = false
 })
+Options.BuyCratesEnabled:OnChanged(logToggle("BuyCratesEnabled"))
+
+Tabs.Buying:AddParagraph({ Title = "Auto Buy Pet Slots", Content = "" })
 
 Tabs.Buying:AddInput("MaxSlots", {
-    Title = "Max Slots",
+    Title = "Maximum Slots",
     Default = "10",
     Placeholder = "Max",
     Numeric = true,
     Finished = true
 })
 
-Tabs.Pets:AddParagraph({ Title = "Auto Buy Pets", Content = "" })
-
-Tabs.Pets:AddToggle("BuyPetsEnabled", {
-    Title = "Enabled",
+Tabs.Buying:AddToggle("BuySlotsEnabled", {
+    Title = "Enable Auto Buy Pet Slots",
     Default = false
 })
+Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled"))
+Tabs.Pets:AddParagraph({ Title = "Auto Buy Pets", Content = "" })
 
 local TargetRarityValues = GetPetRarities()
 local TargetRaritiesDropdown = Tabs.Pets:AddDropdown("TargetRarities", {
@@ -420,7 +425,7 @@ local TargetRaritiesDropdown = Tabs.Pets:AddDropdown("TargetRarities", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(TargetRaritiesDropdown, TargetRarityValues)
+HandleAllSelection(TargetRaritiesDropdown, TargetRarityValues, "TargetRarities")
 
 local TargetPetValues = GetPetNames()
 local TargetPetsDropdown = Tabs.Pets:AddDropdown("TargetPets", {
@@ -429,7 +434,7 @@ local TargetPetsDropdown = Tabs.Pets:AddDropdown("TargetPets", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(TargetPetsDropdown, TargetPetValues)
+HandleAllSelection(TargetPetsDropdown, TargetPetValues, "TargetPets")
 
 Tabs.Pets:AddInput("MinLuckSent", {
     Title = "Minimum Luck Sent",
@@ -447,14 +452,6 @@ Tabs.Pets:AddInput("PetsWebhookURL", {
     Finished = true
 })
 
-Tabs.Pets:AddInput("PetsDiscordID", {
-    Title = "Discord ID",
-    Default = "",
-    Placeholder = "Your Discord ID",
-    Numeric = false,
-    Finished = true
-})
-
 Tabs.Pets:AddInput("PetsNote", {
     Title = "Note",
     Default = "",
@@ -463,12 +460,13 @@ Tabs.Pets:AddInput("PetsNote", {
     Finished = true
 })
 
-Tabs.Pets:AddParagraph({ Title = "Auto Equip Pets", Content = "" })
-
-Tabs.Pets:AddToggle("EquipPetsEnabled", {
-    Title = "Enabled",
+Tabs.Pets:AddToggle("BuyPetsEnabled", {
+    Title = "Enable Auto Buy Pets",
     Default = false
 })
+Options.BuyPetsEnabled:OnChanged(logToggle("BuyPetsEnabled"))
+
+Tabs.Pets:AddParagraph({ Title = "Auto Equip Pets", Content = "" })
 
 local PriorityPetValues = GetPetNames()
 local PriorityPetsDropdown = Tabs.Pets:AddDropdown("PriorityPets", {
@@ -477,7 +475,7 @@ local PriorityPetsDropdown = Tabs.Pets:AddDropdown("PriorityPets", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(PriorityPetsDropdown, PriorityPetValues)
+HandleAllSelection(PriorityPetsDropdown, PriorityPetValues, "PriorityPets")
 
 local BlacklistedPetValues = GetPetNames()
 local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
@@ -486,23 +484,89 @@ local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues)
+HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues, "BlacklistedPets")
 
-Tabs.Opening:AddParagraph({ Title = "Auto Open Eggs", Content = "" })
-
-Tabs.Opening:AddToggle("OpenEggsEnabled", {
-    Title = "Enabled",
+Tabs.Pets:AddToggle("EquipPetsEnabled", {
+    Title = "Enable Auto Equip Pets",
     Default = false
 })
+Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled"))
+Tabs.Sniper:AddParagraph({
+    Title = "Sniper",
+    Content = "Patiently waits for and snipes wild pets matching your targets."
+})
 
-local EggsToOpenValues = withAll({ "Common Egg", "Rare Egg", "Legendary Egg" })
+local SniperRarityValues = GetPetRarities()
+local SniperRaritiesDropdown = Tabs.Sniper:AddDropdown("SniperRarities", {
+    Title = "Target Rarities",
+    Values = SniperRarityValues,
+    Multi = true,
+    Default = {}
+})
+HandleAllSelection(SniperRaritiesDropdown, SniperRarityValues, "SniperRarities")
+
+local SniperPetValues = GetPetNames()
+local SniperPetsDropdown = Tabs.Sniper:AddDropdown("SniperPets", {
+    Title = "Target Pets",
+    Values = SniperPetValues,
+    Multi = true,
+    Default = {}
+})
+HandleAllSelection(SniperPetsDropdown, SniperPetValues, "SniperPets")
+
+Tabs.Sniper:AddInput("SniperMinLuckSent", {
+    Title = "Minimum Luck Sent",
+    Default = "0",
+    Placeholder = "Luck",
+    Numeric = true,
+    Finished = true
+})
+
+Tabs.Sniper:AddToggle("SniperSendSkipped", {
+    Title = "Send Skipped Pets To Webhook",
+    Default = false
+})
+Options.SniperSendSkipped:OnChanged(logToggle("SniperSendSkipped"))
+
+Tabs.Sniper:AddInput("SniperWebhookURL", {
+    Title = "Webhook URL",
+    Default = "",
+    Placeholder = "Paste URL",
+    Numeric = false,
+    Finished = true
+})
+
+Tabs.Sniper:AddInput("SniperDiscordID", {
+    Title = "Discord ID",
+    Default = "",
+    Placeholder = "Your Discord ID",
+    Numeric = false,
+    Finished = true
+})
+
+Tabs.Sniper:AddInput("SniperNote", {
+    Title = "Note",
+    Default = "",
+    Placeholder = "Optional note",
+    Numeric = false,
+    Finished = true
+})
+
+Tabs.Sniper:AddToggle("SniperEnabled", {
+    Title = "Enable Sniper",
+    Default = false
+})
+Options.SniperEnabled:OnChanged(logToggle("SniperEnabled"))
+Tabs.Opening:AddParagraph({ Title = "Auto Open Eggs", Content = "" })
+
+local EggsToOpenValues = withAll({ "Common Egg", "Legendary Egg", "Rare Egg" })
 local EggsToOpenDropdown = Tabs.Opening:AddDropdown("EggsToOpen", {
     Title = "Eggs To Open",
     Values = EggsToOpenValues,
     Multi = true,
     Default = {}
 })
-HandleAllSelection(EggsToOpenDropdown, EggsToOpenValues)
+HandleAllSelection(EggsToOpenDropdown, EggsToOpenValues, "EggsToOpen")
 
 Tabs.Opening:AddInput("OpenEggsAmount", {
     Title = "Amount",
@@ -512,12 +576,13 @@ Tabs.Opening:AddInput("OpenEggsAmount", {
     Finished = true
 })
 
-Tabs.Opening:AddParagraph({ Title = "Auto Open Seed Packs", Content = "" })
-
-Tabs.Opening:AddToggle("OpenPacksEnabled", {
-    Title = "Enabled",
+Tabs.Opening:AddToggle("OpenEggsEnabled", {
+    Title = "Enable Auto Open Eggs",
     Default = false
 })
+Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled"))
+
+Tabs.Opening:AddParagraph({ Title = "Auto Open Seed Packs", Content = "" })
 
 local PacksToOpenValues = withAll({ "Basic Pack", "Premium Pack" })
 local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
@@ -526,7 +591,7 @@ local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(PacksToOpenDropdown, PacksToOpenValues)
+HandleAllSelection(PacksToOpenDropdown, PacksToOpenValues, "PacksToOpen")
 
 Tabs.Opening:AddInput("OpenPacksAmount", {
     Title = "Amount",
@@ -536,12 +601,13 @@ Tabs.Opening:AddInput("OpenPacksAmount", {
     Finished = true
 })
 
-Tabs.Opening:AddParagraph({ Title = "Auto Open Crates", Content = "" })
-
-Tabs.Opening:AddToggle("OpenCratesEnabled", {
-    Title = "Enabled",
+Tabs.Opening:AddToggle("OpenPacksEnabled", {
+    Title = "Enable Auto Open Seed Packs",
     Default = false
 })
+Options.OpenPacksEnabled:OnChanged(logToggle("OpenPacksEnabled"))
+
+Tabs.Opening:AddParagraph({ Title = "Auto Open Crates", Content = "" })
 
 local OpenCrateValues = GetCrateNames()
 local CratesToOpenDropdown = Tabs.Opening:AddDropdown("CratesToOpen", {
@@ -550,7 +616,7 @@ local CratesToOpenDropdown = Tabs.Opening:AddDropdown("CratesToOpen", {
     Multi = true,
     Default = {}
 })
-HandleAllSelection(CratesToOpenDropdown, OpenCrateValues)
+HandleAllSelection(CratesToOpenDropdown, OpenCrateValues, "CratesToOpen")
 
 Tabs.Opening:AddInput("OpenCratesAmount", {
     Title = "Amount",
@@ -560,86 +626,56 @@ Tabs.Opening:AddInput("OpenCratesAmount", {
     Finished = true
 })
 
-local WeatherParagraph = Tabs.Weather:AddParagraph({
-    Title = "Weather Forecast",
-    Content = "Calculating..."
+Tabs.Opening:AddToggle("OpenCratesEnabled", {
+    Title = "Enable Auto Open Crates",
+    Default = false
 })
-
-local totalDuration = 600
-
-local phases = {
-    { Name = "Day", Index = 1, Weathers = { Day = { Chance = 100 } } },
-    { Name = "Sunset", Index = 2, Weathers = { Sunset = { Chance = 100 } } },
-    { Name = "Night", Index = 3, Weathers = {
-        Moon = { Chance = 79 },
-        Bloodmoon = { Chance = 2 },
-        Goldmoon = { Chance = 13 },
-        ["Rainbow Moon"] = { Chance = 6 },
-    }},
-}
-
-local function pickWeather(weathers, rng)
-    local total = 0
-    for _, w in weathers do total += w.Chance end
-    local roll = rng:NextNumber() * total
-    local cumulative = 0
-    for name, w in weathers do
-        cumulative += w.Chance
-        if roll <= cumulative then return name end
-    end
-end
-
-local function buildForecast()
-    local currentCycle = math.floor(os.time() / totalDuration)
-    local lines = {}
-    for offset = 0, 9 do
-        local cycle = currentCycle + offset
-        local parts = {}
-        for _, phase in phases do
-            local seed = cycle * 1000 + phase.Index
-            local weather = pickWeather(phase.Weathers, Random.new(seed))
-            table.insert(parts, phase.Name .. ": " .. weather)
-        end
-        table.insert(lines, ("Cycle %d - %s"):format(cycle, table.concat(parts, " | ")))
-    end
-    return table.concat(lines, "\n")
-end
-
-task.spawn(function()
-    while true do
-        WeatherParagraph:SetDesc(buildForecast())
-        task.wait(5)
-    end
-end)
-
+Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled"))
 Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
 
 Tabs.Settings:AddToggle("OptimisationEnabled", {
-    Title = "Optimisation",
+    Title = "Enable Optimisation",
     Default = false
 })
+Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled"))
+
+Tabs.Settings:AddToggle("DebugConsoleEnabled", {
+    Title = "Enable Debug Console",
+    Default = true
+})
+Options.DebugConsoleEnabled:OnChanged(function()
+    getgenv().IdiotHubDebug = Options.DebugConsoleEnabled.Value
+    print("[IdiotHub]", "[Debug]", "Debug console", Options.DebugConsoleEnabled.Value and "enabled" or "disabled")
+end)
 
 Tabs.Settings:AddButton({
     Title = "Create Config",
-    Callback = function() end
+    Callback = function()
+        debugLog("Config", "Create Config pressed")
+    end
 })
 
 Tabs.Settings:AddButton({
     Title = "Save Config",
-    Callback = function() end
+    Callback = function()
+        debugLog("Config", "Save Config pressed")
+    end
 })
 
 Tabs.Settings:AddButton({
     Title = "Override Config",
-    Callback = function() end
+    Callback = function()
+        debugLog("Config", "Override Config pressed")
+    end
 })
 
 Tabs.Settings:AddParagraph({ Title = "Interface", Content = "" })
 
 Tabs.Settings:AddToggle("AcrylicEnabled", {
-    Title = "Acrylic",
+    Title = "Enable Acrylic Background",
     Default = true
 })
+Options.AcrylicEnabled:OnChanged(logToggle("AcrylicEnabled"))
 
 Tabs.Settings:AddKeybind("MinimizeBind", {
     Title = "Minimize Keybind",
@@ -657,19 +693,49 @@ Tabs.Settings:AddInput("SettingsWebhookURL", {
     Finished = true
 })
 
-Tabs.Settings:AddInput("SettingsDiscordID", {
-    Title = "Discord ID",
-    Default = "",
-    Placeholder = "Your Discord ID",
-    Numeric = false,
-    Finished = true
-})
-
 Tabs.Settings:AddButton({
     Title = "Test Webhook",
-    Callback = function() end
-})
+    Callback = function()
+        local url = Options.SettingsWebhookURL.Value
+        if not url or url == "" then
+            debugWarn("Webhook", "Test Webhook pressed with no URL set")
+            return
+        end
 
+        local payload
+        local encodeOk = pcall(function()
+            payload = game:GetService("HttpService"):JSONEncode({
+                embeds = {
+                    {
+                        title = "IdiotHub Test Webhook",
+                        description = "This webhook is working correctly.",
+                        color = 0x9B59B6,
+                    }
+                }
+            })
+        end)
+
+        if not encodeOk or not payload then
+            debugWarn("Webhook", "Failed to encode test payload")
+            return
+        end
+
+        local ok, response = pcall(function()
+            return request({
+                Url = url,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload,
+            })
+        end)
+
+        if ok and response and response.StatusCode and response.StatusCode < 300 then
+            debugLog("Webhook", "Test Webhook sent successfully, status", response.StatusCode)
+        else
+            debugWarn("Webhook", "Test Webhook failed", ok and (response and response.StatusCode) or response)
+        end
+    end
+})
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local TweenService = game:GetService("TweenService")
@@ -693,7 +759,7 @@ local GardenSyncSuccess, GardenSyncResult = pcall(function()
 end)
 local GardenSyncCtrl = GardenSyncSuccess and GardenSyncResult or nil
 if not GardenSyncSuccess then
-    warn("[IdiotHub] GardenSyncController failed to load:", GardenSyncResult)
+    debugWarn("GardenSync", "Failed to load:", GardenSyncResult)
 end
 
 local StockValues = ReplicatedStorage:WaitForChild("StockValues")
@@ -736,10 +802,21 @@ local Remotes = {
     TeleportRequest = resolveRemote("TeleportButton.Request"),
 }
 
+for name, remote in pairs(Remotes) do
+    if not remote then
+        debugWarn("Remotes", name, "failed to resolve")
+    end
+end
+
 local replica = nil
-pcall(function()
-    replica = PlayerStateClient:WaitForLocalReplica(30)
-end)
+do
+    local ok = pcall(function()
+        replica = PlayerStateClient:WaitForLocalReplica(30)
+    end)
+    if not ok or not replica then
+        debugWarn("Replica", "Failed to acquire local replica")
+    end
+end
 
 local seedPriceMap = {}
 for _, entry in ipairs(SeedData) do
@@ -806,10 +883,6 @@ local function playerAlive()
     return humanoid ~= nil and humanoid.Health > 0
 end
 
-local function isTableEmpty(tbl)
-    return type(tbl) == "table" and next(tbl) == nil
-end
-
 local function selectedSet(dropdownOptions)
     local value = dropdownOptions.Value
     if value["All"] then
@@ -822,7 +895,6 @@ local function isSelected(set, name)
     if set == nil or next(set) == nil then return true end
     return set[name] == true
 end
-
 getgenv().tweenSpeed = getgenv().tweenSpeed or 30
 getgenv().tweening = getgenv().tweening or false
 getgenv().stuffPositions = getgenv().stuffPositions or {
@@ -1411,22 +1483,15 @@ task.spawn(function()
 
                 local seedSet = selectedSet(Options.PlantSeeds)
                 local ignoreSet = selectedSet(Options.PlantIgnoreCrops) or {}
-                local plantAmount = tonumber(Options.PlantAmount.Value) or 1
-                local ignorePos = Options.PlantIgnorePosition.Value == true
 
                 local seedTools = {}
                 for name, toolList in pairs(_seedInventory) do
                     if ignoreSet[name] then continue end
                     if not isSelected(seedSet, name) then continue end
-                    local remaining = plantAmount - (_plantCounts[name] or 0)
-                    if remaining <= 0 then continue end
                     for _, tool in ipairs(toolList) do
-                        if remaining <= 0 then break end
                         local stack = tool:GetAttribute("Count") or 1
-                        local useAmt = math.min(stack, remaining)
-                        if useAmt > 0 then
-                            seedTools[#seedTools + 1] = { tool = tool, amount = useAmt }
-                            remaining -= useAmt
+                        if stack > 0 then
+                            seedTools[#seedTools + 1] = { tool = tool, amount = stack }
                         end
                     end
                 end
@@ -1442,8 +1507,8 @@ task.spawn(function()
                             while sortIdx <= #sorted do
                                 local pos = _candidates[sorted[sortIdx].idx]
                                 sortIdx += 1
-                                if _inPerimeter(pos) then
-                                    if ignorePos or not isOccupied(pos) then return pos end
+                                if _inPerimeter(pos) and not isOccupied(pos) then
+                                    return pos
                                 end
                             end
                             return nil
@@ -1465,12 +1530,17 @@ task.spawn(function()
                         end
 
                         local placed = 0
+                        local outOfSpots = false
                         for _, entry in ipairs(seedTools) do
+                            if outOfSpots then break end
                             local seedTool = entry.tool
                             local count = entry.amount
                             while count > 0 do
                                 local spot = nextSpot()
-                                if not spot then break end
+                                if not spot then
+                                    outOfSpots = true
+                                    break
+                                end
                                 if not ensureEquipped(seedTool) then break end
                                 local seedName = seedTool:GetAttribute("SeedTool")
                                 if not seedName then break end
@@ -1486,12 +1556,19 @@ task.spawn(function()
                                 placed += 1
                                 count -= 1
                             end
-                            if sortIdx > #sorted then break end
                         end
 
                         humanoid:UnequipTools()
-                        if placed > 0 then markGardenDirty() end
+                        if placed > 0 then
+                            markGardenDirty()
+                            debugLog("AutoPlant", "Planted", placed, "seeds")
+                        end
+                        if outOfSpots then
+                            debugLog("AutoPlant", "No more available spots")
+                        end
                     end
+                elseif #seedTools == 0 then
+                    debugLog("AutoPlant", "No selected seeds available in inventory")
                 end
             end
         end
@@ -1630,8 +1707,6 @@ task.spawn(function()
             end
         end
     end
-end)
-
 local _fruitReg = {}
 local _fruitConns = {}
 local _sellValueCache = {}
@@ -2031,6 +2106,18 @@ local function getMaxEquippedPets()
     return math.huge
 end
 
+local function getEquippedCount()
+    local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
+    if type(pets) ~= "table" then return 0 end
+    local count = 0
+    for _, pet in pairs(pets) do
+        if type(pet) == "table" and pet.Equipped then
+            count += 1
+        end
+    end
+    return count
+end
+
 local function computeTargets(byName, blacklist, priority, cap)
     local targets, used = {}, 0
 
@@ -2064,6 +2151,11 @@ local function computeTargets(byName, blacklist, priority, cap)
     return targets, used
 end
 
+local _petsDirty = true
+local function markPetsDirty()
+    _petsDirty = true
+end
+
 local _petsSyncing = false
 
 local function syncPets()
@@ -2090,32 +2182,85 @@ local function syncPets()
         end
     end
 
+    if #toEquip == 0 and #toUnequip == 0 then
+        return
+    end
+
+    debugLog("AutoEquip", "Unequipping", #toUnequip, "Equipping", #toEquip)
+
     for _, uuid in ipairs(toUnequip) do
         Remotes.RequestUnequip:Fire(uuid)
-        task.wait(0.15)
+        task.wait(0.05)
     end
+
     for _, uuid in ipairs(toEquip) do
+        if getEquippedCount() >= getMaxEquippedPets() then
+            debugLog("AutoEquip", "Cap reached mid-sync, stopping")
+            break
+        end
+        local foundTool = nil
         for _, tool in pairs(Backpack:GetChildren()) do
             if (tool:GetAttribute("PetId") or "") == uuid then
-                equipAndActivateTool(tool)
+                foundTool = tool
                 break
             end
         end
-        task.wait(0.15)
+        if foundTool then
+            equipAndActivateTool(foundTool)
+        end
+        task.wait(0.05)
     end
 end
 
+if Remotes.PetEquipped then
+    Remotes.PetEquipped.OnClientEvent:Connect(function()
+        if _petsSyncing then return end
+        markPetsDirty()
+    end)
+end
+if Remotes.PetUnequipped then
+    Remotes.PetUnequipped.OnClientEvent:Connect(function()
+        if _petsSyncing then return end
+        markPetsDirty()
+    end)
+end
+
+Backpack.ChildAdded:Connect(function()
+    markPetsDirty()
+end)
+
 task.spawn(function()
     while true do
-        task.wait(10)
-        if Options.EquipPetsEnabled.Value and playerAlive() and not _petsSyncing then
+        task.wait(0.5)
+        if Options.EquipPetsEnabled.Value and playerAlive() and not _petsSyncing and _petsDirty then
+            _petsDirty = false
             _petsSyncing = true
-            pcall(syncPets)
-            task.wait(0.25)
+            local ok, err = pcall(syncPets)
+            if not ok then
+                debugWarn("AutoEquip", "syncPets errored:", err)
+            end
             _petsSyncing = false
         end
     end
 end)
+
+task.spawn(function()
+    while true do
+        task.wait(20)
+        if Options.EquipPetsEnabled.Value then
+            markPetsDirty()
+        end
+    end
+end)
+
+local function shouldBuyPet(data)
+    local raritySet = selectedSet(Options.TargetRarities)
+    local nameSet = selectedSet(Options.TargetPets)
+    if nameSet and nameSet[data.DisplayName] then return true end
+    if raritySet and raritySet[data.Rarity] then return true end
+    if nameSet == nil or raritySet == nil then return true end
+    return false
+end
 
 local function getIconUrl(iconAssetId)
     if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
@@ -2165,32 +2310,26 @@ local function sendPetWebhook(data, price, oneIn, guid)
     local thumbnailUrl = getIconUrl(data.Image)
     if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
 
-    local discordId = Options.PetsDiscordID.Value
-    local mention = (discordId and discordId ~= "") and ("<@" .. discordId .. ">") or nil
-
     local payload
     local ok = pcall(function()
-        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
+        payload = HttpService:JSONEncode({ embeds = { embed } })
     end)
-    if not ok or not payload then return end
+    if not ok or not payload then
+        debugWarn("AutoBuyPets", "Failed to encode webhook payload")
+        return
+    end
 
-    pcall(function()
-        request({
+    local reqOk, response = pcall(function()
+        return request({
             Url = webhookUrl,
             Method = "POST",
             Headers = { ["Content-Type"] = "application/json" },
             Body = payload,
         })
     end)
-end
-
-local function shouldBuyPet(data)
-    local raritySet = selectedSet(Options.TargetRarities)
-    local nameSet = selectedSet(Options.TargetPets)
-    if nameSet and nameSet[data.DisplayName] then return true end
-    if raritySet and raritySet[data.Rarity] then return true end
-    if nameSet == nil or raritySet == nil then return true end
-    return false
+    if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
+        debugWarn("AutoBuyPets", "Webhook send failed")
+    end
 end
 
 local petInFlight = setmetatable({}, { __mode = "k" })
@@ -2234,7 +2373,12 @@ local function tryBuyPet(refPart)
 
     teleport(refPart.Position + Vector3.new(0, 3, 0))
     task.wait(0.2)
-    Remotes.WildPetTame:Fire(refPart)
+    local ok, err = pcall(function()
+        Remotes.WildPetTame:Fire(refPart)
+    end)
+    if not ok then
+        debugWarn("AutoBuyPets", "WildPetTame fire failed:", err)
+    end
     task.wait(0.1)
     petInFlight[refPart] = nil
 end
@@ -2267,6 +2411,319 @@ if wildPetRef then
         end
     end)
 end
+local sniperIconCache = {}
+local sniperIconOrder, sniperIconHead = {}, 1
+local SNIPER_ICON_CACHE_MAX = 2000
 
+local function sniperCacheIcon(key, val)
+    sniperIconCache[key] = val
+    sniperIconOrder[#sniperIconOrder + 1] = key
+    if #sniperIconOrder - sniperIconHead + 1 > SNIPER_ICON_CACHE_MAX then
+        sniperIconCache[sniperIconOrder[sniperIconHead]] = nil
+        sniperIconOrder[sniperIconHead] = nil
+        sniperIconHead += 1
+    end
+end
 
+local function sniperGetIconUrl(iconAssetId)
+    if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
+    local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
+    if not assetNumber then return nil end
+    if sniperIconCache[assetNumber] then return sniperIconCache[assetNumber] end
+
+    for attempt = 1, 25 do
+        local url
+        pcall(function()
+            local r = request({
+                Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
+                Method = "GET",
+            })
+            if r and r.Success then
+                local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
+                if ok and decoded and decoded.data and decoded.data[1] then
+                    local d = decoded.data[1]
+                    if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
+                        url = d.imageUrl
+                    end
+                end
+            end
+        end)
+        if url then
+            sniperCacheIcon(assetNumber, url)
+            return url
+        end
+        task.wait(math.min(0.2 * attempt, 2))
+    end
+    return nil
+end
+
+local sniperWebhookQueue = {}
+local sniperWebhookRunning = false
+
+local function sniperProcessWebhookQueue()
+    if sniperWebhookRunning then return end
+    sniperWebhookRunning = true
+    task.spawn(function()
+        while #sniperWebhookQueue > 0 do
+            local payload = table.remove(sniperWebhookQueue, 1)
+            local attempt = 0
+            while attempt < 5 do
+                attempt += 1
+                local resp
+                pcall(function()
+                    resp = request({
+                        Url = Options.SniperWebhookURL.Value,
+                        Method = "POST",
+                        Headers = { ["Content-Type"] = "application/json" },
+                        Body = payload,
+                    })
+                end)
+                if resp and resp.StatusCode == 429 then
+                    local retryAfter = 1
+                    pcall(function()
+                        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, resp.Body)
+                        if ok and decoded and decoded.retry_after then
+                            retryAfter = tonumber(decoded.retry_after) or 1
+                        end
+                    end)
+                    task.wait(retryAfter)
+                else
+                    if not resp or not resp.StatusCode or resp.StatusCode >= 300 then
+                        debugWarn("Sniper", "Webhook send failed")
+                    end
+                    break
+                end
+            end
+            task.wait(0.4)
+        end
+        sniperWebhookRunning = false
+    end)
+end
+
+local function sniperQueueWebhook(embed, mention)
+    local url = Options.SniperWebhookURL.Value
+    if not url or url == "" then return end
+    local payload
+    if not pcall(function()
+        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
+    end) then
+        debugWarn("Sniper", "Failed to encode webhook payload")
+        return
+    end
+    table.insert(sniperWebhookQueue, payload)
+    sniperProcessWebhookQueue()
+end
+
+local function sniperRedactGuid(guid)
+    if not guid or guid == "" then return "N/A" end
+    return "||...." .. guid:sub(-4) .. "||"
+end
+
+local function sniperSendWebhook(data, price, oneIn, guid, state, spawnedAt, sniped)
+    if not data then return end
+    oneIn = oneIn or 0
+    local minLuck = tonumber(Options.SniperMinLuckSent.Value) or 0
+    if oneIn < minLuck then return end
+
+    local display = tostring(data.DisplayName or "Unknown")
+    local article = display:match("^[AEIOUaeiou]") and "an" or "a"
+    local statusNote = sniped
+        and "Pet was successfully sniped."
+        or "Pet was spawned but was not sniped."
+    local fields = {
+        { name = "Price", value = formatNumber(price), inline = true },
+        { name = "Rarity", value = tostring(data.Rarity or "N/A"), inline = true },
+        { name = "State", value = tostring(state or "N/A"), inline = true },
+        { name = "Spawned At", value = spawnedAt and ("<t:" .. math.floor(spawnedAt) .. ":R>") or "N/A", inline = true },
+        { name = "Status", value = statusNote, inline = false },
+        { name = "server-job-id", value = tostring(game.JobId), inline = false },
+        { name = "pet-unique-guid", value = sniperRedactGuid(guid), inline = false },
+    }
+    local note = Options.SniperNote.Value
+    if note and note ~= "" then
+        table.insert(fields, { name = "Note", value = note, inline = false })
+    end
+    local embed = {
+        title = "Sniper spotted " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. display .. "!",
+        color = sniped and 0x57F287 or 0xED4245,
+        fields = fields,
+        footer = { text = "discord.gg/idiothub" },
+    }
+    local thumb = sniperGetIconUrl(data.Image)
+    if thumb then embed.thumbnail = { url = thumb } end
+
+    local discordId = Options.SniperDiscordID.Value
+    local mention = (sniped and discordId and discordId ~= "") and ("<@" .. discordId .. ">") or nil
+    sniperQueueWebhook(embed, mention)
+end
+
+local sniperSkippedSent = {}
+local sniperConfirmedGuids = {}
+local sniperBuying = {}
+local sniperPendingConfirm = {}
+
+local function sniperNorm(s)
+    return tostring(s):lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function sniperShouldBuy(petName, data)
+    local nameSet = selectedSet(Options.SniperPets)
+    local raritySet = selectedSet(Options.SniperRarities)
+    if isSelected(nameSet, data.DisplayName) and nameSet ~= nil then return true end
+    if isSelected(raritySet, data.Rarity) and raritySet ~= nil then return true end
+    if nameSet == nil or raritySet == nil then return true end
+    return false
+end
+
+local function sniperGetPetInfo(refPart)
+    local petName = refPart:GetAttribute("PetName")
+    if not petName then return nil end
+    local data = PetData[petName]
+    if not data then return nil end
+    return petName, data
+end
+
+local function sniperWaitForAttributes(refPart, timeout)
+    if refPart:GetAttribute("PetName") then return true end
+    local deadline = os.clock() + (timeout or 1)
+    while os.clock() < deadline do
+        if not refPart.Parent then return false end
+        if refPart:GetAttribute("PetName") then return true end
+        task.wait()
+    end
+    return refPart:GetAttribute("PetName") ~= nil
+end
+
+local SniperBuyState = { active = 0 }
+
+local function sniperExecuteBuy(refPart, petName, data, guid)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    sniperPendingConfirm[petName] = {
+        State = refPart:GetAttribute("State"),
+        SpawnedAt = refPart:GetAttribute("SpawnedAt"),
+        guid = guid,
+    }
+
+    teleport(refPart.Position + Vector3.new(0, 3, 0))
+
+    for _ = 0, 2 do
+        if guid and sniperConfirmedGuids[guid] then break end
+        if not refPart.Parent then break end
+        local owner = refPart:GetAttribute("OwnerName")
+        if owner and #owner > 1 then break end
+
+        local ok, err = pcall(function()
+            Remotes.WildPetTame:Fire(refPart)
+        end)
+        if not ok then
+            debugWarn("Sniper", "WildPetTame fire failed:", err)
+        end
+
+        local deadline = os.clock() + 2
+        while os.clock() < deadline do
+            if guid and sniperConfirmedGuids[guid] then break end
+            if not refPart.Parent then break end
+            task.wait(0.1)
+        end
+        if guid and sniperConfirmedGuids[guid] then break end
+    end
+
+    if not (guid and sniperConfirmedGuids[guid]) then
+        local meta = sniperPendingConfirm[petName]
+        sniperPendingConfirm[petName] = nil
+        if meta then
+            task.spawn(sniperSendWebhook, data, refPart:GetAttribute("Price") or data.BasePrice or 0,
+                calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, false)
+        end
+    end
+end
+
+local function sniperEvaluate(refPart)
+    if not Options.SniperEnabled.Value then return nil end
+    if not refPart.Parent then return nil end
+
+    local owner = refPart:GetAttribute("OwnerName")
+    if owner and #owner > 1 then return nil end
+
+    local guid = select(2, parseWildPetName(refPart.Name)) or refPart.Name:match("^WildPet_(.+)$")
+    if guid and (sniperBuying[guid] or sniperConfirmedGuids[guid]) then return nil end
+
+    local petName, data = sniperGetPetInfo(refPart)
+    if not data then return nil end
+
+    if not sniperShouldBuy(petName, data) then
+        if Options.SniperSendSkipped.Value and guid and not sniperSkippedSent[guid] then
+            sniperSkippedSent[guid] = true
+            task.spawn(sniperSendWebhook, data, data.BasePrice or 0,
+                calcOneIn(data.SpawnChance), guid,
+                refPart:GetAttribute("State"), refPart:GetAttribute("SpawnedAt"), false)
+        end
+        return nil
+    end
+
+    return {
+        refPart = refPart,
+        petName = petName,
+        data = data,
+        guid = guid,
+        oneIn = calcOneIn(data.SpawnChance),
+    }
+end
+
+local function sniperProcessCandidate(c)
+    SniperBuyState.active += 1
+    if c.guid then sniperBuying[c.guid] = true end
+    local ok, err = pcall(sniperExecuteBuy, c.refPart, c.petName, c.data, c.guid)
+    if not ok then
+        debugWarn("Sniper", "executeBuy errored:", err)
+    end
+    if c.guid then sniperBuying[c.guid] = nil end
+    SniperBuyState.active -= 1
+end
+
+local function sniperHandleSpawn(refPart)
+    task.spawn(function()
+        if not sniperWaitForAttributes(refPart, 1) then return end
+        local c = sniperEvaluate(refPart)
+        if c then sniperProcessCandidate(c) end
+    end)
+end
+
+if Remotes.WildPetCollected then
+    Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
+        local petName = select(2, ...)
+        if not petName then return end
+        local meta = sniperPendingConfirm[petName]
+        if not meta then return end
+        local data = PetData[petName]
+        if not data then return end
+        local guid = meta.guid
+        if guid then sniperConfirmedGuids[guid] = true end
+        sniperPendingConfirm[petName] = nil
+        task.spawn(sniperSendWebhook, data, data.BasePrice or 0,
+            calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, true)
+        debugLog("Sniper", "Confirmed snipe:", petName)
+    end)
+end
+
+if wildPetRef then
+    wildPetRef.ChildAdded:Connect(sniperHandleSpawn)
+
+    task.spawn(function()
+        while true do
+            task.wait(10)
+            if Options.SniperEnabled.Value then
+                for _, refPart in ipairs(wildPetRef:GetChildren()) do
+                    if sniperWaitForAttributes(refPart, 0.25) then
+                        local c = sniperEvaluate(refPart)
+                        if c then sniperProcessCandidate(c) end
+                    end
+                end
+            end
+        end
+    end)
+end
 Window:SelectTab(1)
