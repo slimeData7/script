@@ -188,7 +188,7 @@ local Tabs = {
     Farming = Window:AddTab({ Title = "Farming", Icon = "sprout" }),
     Selling = Window:AddTab({ Title = "Selling", Icon = "coins" }),
     Buying = Window:AddTab({ Title = "Buying", Icon = "shopping-cart" }),
-    Pets = Window:AddTab({ Title = "Pets", Icon = "paw-print" }),
+    Pets = Window:AddTab({ Title = "Pets", Icon = "cat" }),
     Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
@@ -229,8 +229,8 @@ Tabs.Main:AddParagraph({
 })
 
 local THEME_NAMES = {
-    "Rose", "Amethyst", "Aqua", "Green", "Orange",
-    "Dark", "Darker", "Light", "Catppuccin Mocha", "Catppuccin Latte",
+    "Rose", "Amethyst", "Aqua",
+    "Dark", "Darker", "Light",
 }
 
 for _, themeName in ipairs(THEME_NAMES) do
