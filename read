@@ -2,12 +2,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
-local MutationData = require(ReplicatedStorage.SharedModules.MutationData)
-local SeedData = require(ReplicatedStorage.SharedModules.SeedData)
-local SellValueData = require(ReplicatedStorage.SharedModules.SellValueData)
-local PetData = require(ReplicatedStorage.SharedData.PetData)
-local CrateData = require(ReplicatedStorage.SharedModules.CrateData)
-local GearShopData = require(ReplicatedStorage.SharedModules.GearShopData)
+local SharedModules = ReplicatedStorage:WaitForChild("SharedModules")
+local SharedData = ReplicatedStorage:WaitForChild("SharedData")
+
+local MutationData = require(SharedModules:WaitForChild("MutationData"))
+local SeedData = require(SharedModules:WaitForChild("SeedData"))
+local SellValueData = require(SharedModules:WaitForChild("SellValueData"))
+local PetData = require(SharedData:WaitForChild("PetData"))
+local CrateData = require(SharedModules:WaitForChild("CrateData"))
+local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
 
 local MUTATIONS = { "Gold", "Rainbow", "Electric", "Frozen", "Bloodlit", "Chained", "Starstruck" }
 
@@ -668,24 +671,30 @@ local LocalPlayer = Players.LocalPlayer
 local Backpack = LocalPlayer:WaitForChild("Backpack")
 local userId = LocalPlayer.UserId
 
-local PetSlotPrices = require(ReplicatedStorage.SharedData.PetSlotPrices)
-local Networking = require(ReplicatedStorage.SharedModules.Networking)
-local PlayerStateClient = require(ReplicatedStorage.ClientModules.PlayerStateClient)
-local FruitValueCalc = require(ReplicatedStorage.SharedModules.FruitValueCalc)
+local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
+local Controllers = PlayerScripts:WaitForChild("Controllers")
+local ClientModules = ReplicatedStorage:WaitForChild("ClientModules")
 
-local GardenSyncSuccess, GardenSyncCtrl = pcall(function()
-    return require(LocalPlayer.PlayerScripts.Controllers.GardenSyncController)
+local PetSlotPrices = require(SharedData:WaitForChild("PetSlotPrices"))
+local Networking = require(SharedModules:WaitForChild("Networking"))
+local PlayerStateClient = require(ClientModules:WaitForChild("PlayerStateClient"))
+local FruitValueCalc = require(SharedModules:WaitForChild("FruitValueCalc"))
+
+local GardenSyncSuccess, GardenSyncResult = pcall(function()
+    return require(Controllers:WaitForChild("GardenSyncController"))
 end)
+local GardenSyncCtrl = GardenSyncSuccess and GardenSyncResult or nil
 if not GardenSyncSuccess then
-    GardenSyncCtrl = nil
+    warn("[IdiotHub] GardenSyncController failed to load:", GardenSyncResult)
 end
 
 local SeedShopItems = ReplicatedStorage:FindFirstChild("SeedShopStock")
 local GearShopItems = ReplicatedStorage:FindFirstChild("GearShopStock")
 local CrateShopItems = ReplicatedStorage:FindFirstChild("CrateShopStock")
 
-local wildPetRef = workspace.Map.WildPetRef
-local wildPetSpawns = workspace.Map.WildPetSpawns
+local MapFolder = workspace:WaitForChild("Map")
+local wildPetRef = MapFolder:WaitForChild("WildPetRef")
+local wildPetSpawns = MapFolder:WaitForChild("WildPetSpawns")
 
 local function resolveRemote(path)
     local node = Networking
@@ -953,7 +962,7 @@ local function teleport(target, teleportDirect)
         targetPos = target
     end
 
-    local safezonePart = workspace.Map.SafeZones.Part
+    local safezonePart = MapFolder:WaitForChild("SafeZones"):WaitForChild("Part")
     local gardenCF = getgenv().stuffPositions and getgenv().stuffPositions["Garden"]
 
     local safezoneEdge = getBottomRectClosestPoint(safezonePart, targetPos)
