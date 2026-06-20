@@ -176,7 +176,7 @@ local Window = Fluent:CreateWindow({
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true,
-    Theme = "Dark",
+    Theme = "Rose",
     MinimizeKey = Enum.KeyCode.LeftControl
 })
 
@@ -219,21 +219,31 @@ Tabs.Main:AddButton({
     end
 })
 
-local DebugConsoleParagraph = Tabs.Main:AddParagraph({
-    Title = "Debug Console",
-    Content = "No activity yet"
+Tabs.Main:AddParagraph({
+    Title = "Theme",
+    Content = "Pick a look that's easy on the eyes"
 })
 
-featureLoop("DebugConsoleRefresh", 1, function()
-    if not Options.DebugConsoleEnabled or not Options.DebugConsoleEnabled.Value then return end
-    local log = getgenv().IdiotHubLog
-    local lines = {}
-    local start = math.max(1, #log - 7)
-    for i = start, #log do
-        lines[#lines + 1] = log[i].text
-    end
-    DebugConsoleParagraph:SetDesc(#lines > 0 and table.concat(lines, "\n") or "No activity yet")
-end)
+local THEME_NAMES = {
+    "Rose", "Amethyst", "Aqua", "Green", "Orange",
+    "Dark", "Darker", "Light", "Catppuccin Mocha", "Catppuccin Latte",
+}
+
+for _, themeName in ipairs(THEME_NAMES) do
+    Tabs.Main:AddButton({
+        Title = themeName,
+        Callback = function()
+            local ok = pcall(function()
+                Fluent:SetTheme(themeName)
+            end)
+            if ok then
+                debugLog("Theme", "switched to", themeName)
+            else
+                debugWarn("Theme", "SetTheme not supported by this Fluent build")
+            end
+        end
+    })
+end
 
 Tabs.Farming:AddParagraph({ Title = "Auto Harvest", Content = "" })
 
@@ -256,13 +266,13 @@ local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
 HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
 
 Tabs.Farming:AddToggle("HarvestInstantMutated", {
-    Title = "Collect Mutated Fruit On Sight",
+    Title = "Enabled",
     Default = false
 })
 Options.HarvestInstantMutated:OnChanged(logToggle("HarvestInstantMutated", "Collect Mutated Fruit On Sight"))
 
 Tabs.Farming:AddToggle("HarvestEnabled", {
-    Title = "Auto Harvest",
+    Title = "Enabled",
     Default = false
 })
 Options.HarvestEnabled:OnChanged(logToggle("HarvestEnabled", "Auto Harvest"))
@@ -279,7 +289,7 @@ local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
 HandleAllSelection(PlantSeedsDropdown, PlantSeedValues, "PlantSeeds")
 
 Tabs.Farming:AddToggle("PlantEnabled", {
-    Title = "Auto Plant",
+    Title = "Enabled",
     Default = false
 })
 Options.PlantEnabled:OnChanged(logToggle("PlantEnabled", "Auto Plant"))
@@ -296,7 +306,7 @@ local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
 HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues, "SprinklersToUse")
 
 Tabs.Farming:AddToggle("SprinklerEnabled", {
-    Title = "Auto Sprinkler",
+    Title = "Enabled",
     Default = false
 })
 Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled", "Auto Sprinkler"))
@@ -330,7 +340,7 @@ Tabs.Selling:AddInput("SellDelay", {
 })
 
 Tabs.Selling:AddToggle("SellEnabled", {
-    Title = "Auto Sell",
+    Title = "Enabled",
     Default = false
 })
 Options.SellEnabled:OnChanged(logToggle("SellEnabled", "Auto Sell"))
@@ -365,7 +375,7 @@ Tabs.Selling:AddInput("FavoriteMinPrice", {
 })
 
 Tabs.Selling:AddToggle("FavoriteEnabled", {
-    Title = "Auto Favorite",
+    Title = "Enabled",
     Default = false
 })
 Options.FavoriteEnabled:OnChanged(logToggle("FavoriteEnabled", "Auto Favorite"))
@@ -390,7 +400,7 @@ Tabs.Buying:AddInput("AmountPerSeed", {
 })
 
 Tabs.Buying:AddToggle("BuySeedsEnabled", {
-    Title = "Auto Buy Seeds",
+    Title = "Enabled",
     Default = false
 })
 Options.BuySeedsEnabled:OnChanged(logToggle("BuySeedsEnabled", "Auto Buy Seeds"))
@@ -415,7 +425,7 @@ Tabs.Buying:AddInput("AmountPerGear", {
 })
 
 Tabs.Buying:AddToggle("BuyGearsEnabled", {
-    Title = "Auto Buy Gears",
+    Title = "Enabled",
     Default = false
 })
 Options.BuyGearsEnabled:OnChanged(logToggle("BuyGearsEnabled", "Auto Buy Gears"))
@@ -440,7 +450,7 @@ Tabs.Buying:AddInput("AmountPerCrate", {
 })
 
 Tabs.Buying:AddToggle("BuyCratesEnabled", {
-    Title = "Auto Buy Crates",
+    Title = "Enabled",
     Default = false
 })
 Options.BuyCratesEnabled:OnChanged(logToggle("BuyCratesEnabled", "Auto Buy Crates"))
@@ -456,7 +466,7 @@ Tabs.Buying:AddInput("MaxSlots", {
 })
 
 Tabs.Buying:AddToggle("BuySlotsEnabled", {
-    Title = "Auto Buy Pet Slots",
+    Title = "Enabled",
     Default = false
 })
 Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled", "Auto Buy Pet Slots"))
@@ -505,7 +515,7 @@ Tabs.Pets:AddInput("PetsNote", {
 })
 
 Tabs.Pets:AddToggle("BuyPetsEnabled", {
-    Title = "Auto Buy Pets",
+    Title = "Enabled",
     Default = false
 })
 Options.BuyPetsEnabled:OnChanged(logToggle("BuyPetsEnabled", "Auto Buy Pets"))
@@ -531,7 +541,7 @@ local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
 HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues, "BlacklistedPets")
 
 Tabs.Pets:AddToggle("EquipPetsEnabled", {
-    Title = "Auto Equip Pets",
+    Title = "Enabled",
     Default = false
 })
 Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled", "Auto Equip Pets"))
@@ -556,7 +566,7 @@ Tabs.Opening:AddInput("OpenEggsAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenEggsEnabled", {
-    Title = "Auto Open Eggs",
+    Title = "Enabled",
     Default = false
 })
 Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled", "Auto Open Eggs"))
@@ -581,7 +591,7 @@ Tabs.Opening:AddInput("OpenPacksAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenPacksEnabled", {
-    Title = "Auto Open Seed Packs",
+    Title = "Enabled",
     Default = false
 })
 Options.OpenPacksEnabled:OnChanged(logToggle("OpenPacksEnabled", "Auto Open Seed Packs"))
@@ -606,20 +616,20 @@ Tabs.Opening:AddInput("OpenCratesAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenCratesEnabled", {
-    Title = "Auto Open Crates",
+    Title = "Enabled",
     Default = false
 })
 Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Crates"))
 Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
 
 Tabs.Settings:AddToggle("OptimisationEnabled", {
-    Title = "Performance Optimisation",
+    Title = "Enabled",
     Default = false
 })
 Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled", "Performance Optimisation"))
 
 Tabs.Settings:AddToggle("DebugConsoleEnabled", {
-    Title = "Debug Console",
+    Title = "Enabled",
     Default = true
 })
 Options.DebugConsoleEnabled:OnChanged(function()
@@ -651,7 +661,7 @@ Tabs.Settings:AddButton({
 Tabs.Settings:AddParagraph({ Title = "Interface", Content = "" })
 
 Tabs.Settings:AddToggle("AcrylicEnabled", {
-    Title = "Acrylic Background",
+    Title = "Enabled",
     Default = true
 })
 Options.AcrylicEnabled:OnChanged(logToggle("AcrylicEnabled", "Acrylic Background"))
