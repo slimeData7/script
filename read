@@ -1111,11 +1111,14 @@ local function checkFruitCollect(mutationSet, variantSet, instantMutated, mutati
     return instant or (maxAge > 0 and age >= maxAge)
 end
 
-local _fruitCountAll = 0
+-- Combined settle delay constant
+local SETTLE_DELAY = 0.1
+
+-- Fruit counts: only non-favorite count is needed
 local _fruitCountNonFav = 0
 local _seedInventory = {}
 local _sprinklerInventory = {}
-local _bpToolConns = {}
+local _backpackFruitConns = {}
 
 local function _isFruit(t)
     return t:GetAttribute("Fruit") ~= nil and t:GetAttribute("FruitName") ~= nil
@@ -1148,7 +1151,6 @@ end
 
 local function _onToolAdded(tool)
     if _isFruit(tool) then
-        _fruitCountAll += 1
         if tool:GetAttribute("IsFavorite") ~= true then
             _fruitCountNonFav += 1
         end
@@ -1163,7 +1165,6 @@ end
 
 local function _onToolRemoved(tool)
     if _isFruit(tool) then
-        _fruitCountAll = math.max(0, _fruitCountAll - 1)
         if tool:GetAttribute("IsFavorite") ~= true then
             _fruitCountNonFav = math.max(0, _fruitCountNonFav - 1)
         end
@@ -1177,13 +1178,13 @@ local function _onToolRemoved(tool)
 end
 
 local function _setupBackpackTracking(bp)
-    for _, c in ipairs(_bpToolConns) do c:Disconnect() end
-    _bpToolConns = {}
-    _fruitCountAll, _fruitCountNonFav = 0, 0
+    for _, c in ipairs(_backpackFruitConns) do c:Disconnect() end
+    _backpackFruitConns = {}
+    _fruitCountNonFav = 0
     _seedInventory, _sprinklerInventory = {}, {}
     for _, t in ipairs(bp:GetChildren()) do _onToolAdded(t) end
-    _bpToolConns[1] = bp.ChildAdded:Connect(_onToolAdded)
-    _bpToolConns[2] = bp.ChildRemoved:Connect(_onToolRemoved)
+    _backpackFruitConns[1] = bp.ChildAdded:Connect(_onToolAdded)
+    _backpackFruitConns[2] = bp.ChildRemoved:Connect(_onToolRemoved)
 end
 
 _setupBackpackTracking(Backpack)
@@ -1191,8 +1192,8 @@ LocalPlayer.ChildAdded:Connect(function(c)
     if c:IsA("Backpack") then _setupBackpackTracking(c) end
 end)
 
-local function getFruitCount(ignoreFavs)
-    return ignoreFavs and _fruitCountNonFav or _fruitCountAll
+local function getFruitCount()
+    return _fruitCountNonFav
 end
 
 local DENSITY_CELL = 5
@@ -1258,7 +1259,7 @@ local _gardenDirty = true
 local _lastGardenPoll = 0
 local _plantCounts = {}
 local _harvestTargets = {}
-local _candidDirty = true
+-- Removed _candidDirty, combined with _gardenDirty
 
 local function _plantWorldPos(p)
     local gp = p.Positions
@@ -1278,7 +1279,8 @@ local function _rebuildGardenCache()
     _densGrid = {}
     _occGrid = {}
     _plantWorldPositions = {}
-
+    -- We'll rebuild sorted candidates here too
+    local candidates = {}  -- for sorted later
     local doHarvest = Options.HarvestEnabled.Value
     local mutationSet = selectedSet(Options.HarvestMutations)
     local variantSet = selectedSet(Options.HarvestVariants)
@@ -1295,6 +1297,7 @@ local function _rebuildGardenCache()
             _densAdd(wp)
             _occMark(wp)
             _plantWorldPositions[#_plantWorldPositions + 1] = wp
+            candidates[#candidates + 1] = wp
         end
 
         if doHarvest then
@@ -1314,7 +1317,14 @@ local function _rebuildGardenCache()
         end
     end
 
-    _candidDirty = true
+    -- Build sorted candidates (density-based) directly
+    local scored = {}
+    for i, pos in ipairs(candidates) do
+        scored[i] = { idx = i, score = densityAt(pos) }
+    end
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    _candidSorted = scored  -- global variable for sorted order
+
     _gardenDirty = false
 end
 
@@ -1339,8 +1349,8 @@ local function _ensureStaticParams()
     if not _plantAreaParams then _buildPlantAreaParams() end
 end
 
-local _candidates = {}
-local _candidSorted = {}
+local _candidates = {}        -- raw candidate positions
+local _candidSorted = {}      -- sorted list of indices
 local _sprinklerCands = {}
 local _cachedPlotId = nil
 local _plotCenter = nil
@@ -1386,7 +1396,6 @@ end
 
 local function _precomputeCandidates(plot, plantAreas)
     _candidates = {}
-    _candidDirty = true
     if #plantAreas == 0 then return end
     for _, area in ipairs(plantAreas) do
         local ap = area.Position
@@ -1405,6 +1414,8 @@ local function _precomputeCandidates(plot, plantAreas)
             end
         end
     end
+    -- Mark garden dirty so sorted will be rebuilt on next getSortedCandidates
+    markGardenDirty()
 end
 
 local function _precomputeSprinklerCands(plantAreas)
@@ -1427,16 +1438,11 @@ local function _precomputeSprinklerCands(plantAreas)
 end
 
 local function getSortedCandidates()
-    if not _candidDirty then return _candidSorted end
-    local n = #_candidates
-    local scored = table.create(n)
-    for i = 1, n do
-        scored[i] = { idx = i, score = densityAt(_candidates[i]) }
+    -- If garden is dirty, rebuild it (tickGarden will be called elsewhere, but just in case)
+    if _gardenDirty then
+        _rebuildGardenCache()
     end
-    table.sort(scored, function(a, b) return a.score > b.score end)
-    _candidSorted = scored
-    _candidDirty = false
-    return scored
+    return _candidSorted
 end
 
 local function _trySetup(plotId)
@@ -1464,12 +1470,12 @@ task.spawn(function()
     while true do
         task.wait(0.5)
         if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
-            if getFruitCount(true) < 100 then
+            if getFruitCount() < 100 then
                 tickGarden()
                 if #_harvestTargets > 0 and Remotes.CollectFruit then
                     teleport("Garden")
                     local fire = Remotes.CollectFruit.Fire
-                    local fruitCount = getFruitCount(true)
+                    local fruitCount = getFruitCount()
                     local collected = 0
                     for i = 1, #_harvestTargets do
                         local t = _harvestTargets[i]
@@ -1486,7 +1492,6 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    local PLANT_SETTLE = 0.1
     while true do
         task.wait(2)
         if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
@@ -1559,13 +1564,13 @@ task.spawn(function()
                                 if not seedName then break end
 
                                 teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
-                                task.wait(PLANT_SETTLE)
+                                task.wait(SETTLE_DELAY)
                                 Remotes.PlantSeed:Fire(spot, seedName, seedTool)
 
                                 _occMark(spot)
                                 _optMark(spot)
                                 _densAdd(spot)
-                                _candidDirty = true
+                                markGardenDirty()
                                 placed += 1
                                 count -= 1
                             end
@@ -1573,7 +1578,6 @@ task.spawn(function()
 
                         humanoid:UnequipTools()
                         if placed > 0 then
-                            markGardenDirty()
                             debugLog("AutoPlant", "Planted", placed, "seeds")
                         end
                         if outOfSpots then
@@ -1655,7 +1659,6 @@ local function scoreSprinklerCands()
 end
 
 task.spawn(function()
-    local PLACE_SETTLE = 0.1
     while true do
         task.wait(1)
         if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
@@ -1705,7 +1708,7 @@ task.spawn(function()
                                             humanoid:EquipTool(tool)
                                         end
                                         teleport(cand.Position + Vector3.new(0, 2, 0), false)
-                                        task.wait(PLACE_SETTLE)
+                                        task.wait(SETTLE_DELAY)
                                         Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
                                         occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
                                         placed += 1
@@ -1720,6 +1723,8 @@ task.spawn(function()
             end
         end
     end
+end)
+
 local _fruitReg = {}
 local _fruitConns = {}
 local _sellValueCache = {}
@@ -1824,11 +1829,12 @@ local function _unregisterFruit(tool)
     _sellValueCache[tool] = nil
 end
 
-local _fruitBpConns = {}
 local function _setupFruitTracking(bp)
-    for _, c in ipairs(_fruitBpConns) do c:Disconnect() end
-    _fruitBpConns = {}
+    -- Disconnect backpack-level connections
+    for _, c in ipairs(_backpackFruitConns) do c:Disconnect() end
+    _backpackFruitConns = {}
 
+    -- Clean up existing fruit registrations
     for _, conns in pairs(_fruitConns) do
         for _, c in ipairs(conns) do c:Disconnect() end
     end
@@ -1845,12 +1851,12 @@ local function _setupFruitTracking(bp)
         end
     end
 
-    _fruitBpConns[1] = bp.ChildAdded:Connect(function(tool)
+    _backpackFruitConns[1] = bp.ChildAdded:Connect(function(tool)
         if tool:GetAttribute("Fruit") ~= nil and tool:GetAttribute("FruitName") ~= nil then
             _registerFruit(tool)
         end
     end)
-    _fruitBpConns[2] = bp.ChildRemoved:Connect(_unregisterFruit)
+    _backpackFruitConns[2] = bp.ChildRemoved:Connect(_unregisterFruit)
 end
 
 _setupFruitTracking(Backpack)
@@ -2278,174 +2284,19 @@ local function shouldBuyPet(data)
     return false
 end
 
-local function getIconUrl(iconAssetId)
-    if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
-    local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
-    if not assetNumber then return nil end
-    local thumbnailUrl = nil
-    pcall(function()
-        local r = request({
-            Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
-            Method = "GET",
-        })
-        if r and r.Success then
-            local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
-            if ok and decoded and decoded.data and decoded.data[1] then
-                thumbnailUrl = decoded.data[1].imageUrl
-            end
-        end
-    end)
-    return thumbnailUrl
-end
-
-local function sendPetWebhook(data, price, oneIn, guid)
-    local webhookUrl = Options.PetsWebhookURL.Value
-    local minLuck = tonumber(Options.MinLuckSent.Value) or 0
-    if oneIn < minLuck then return end
-    if not webhookUrl or webhookUrl == "" then return end
-
-    local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
-    local title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
-    local fields = {
-        { name = "Player", value = "||" .. LocalPlayer.Name .. "||", inline = true },
-        { name = "Price", value = formatNumber(price), inline = true },
-        { name = "Rarity", value = tostring(data.Rarity), inline = true },
-        { name = "server-job-id", value = tostring(game.JobId), inline = false },
-        { name = "pet-unique-guid", value = tostring(guid or "N/A"), inline = false },
-    }
-    local note = Options.PetsNote.Value
-    if note and note ~= "" then
-        table.insert(fields, { name = "Note", value = note, inline = false })
-    end
-    local embed = {
-        title = title,
-        color = 0x5865F2,
-        fields = fields,
-        footer = { text = "discord.gg/idiothub" },
-    }
-    local thumbnailUrl = getIconUrl(data.Image)
-    if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
-
-    local payload
-    local ok = pcall(function()
-        payload = HttpService:JSONEncode({ embeds = { embed } })
-    end)
-    if not ok or not payload then
-        debugWarn("AutoBuyPets", "Failed to encode webhook payload")
-        return
-    end
-
-    local reqOk, response = pcall(function()
-        return request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = payload,
-        })
-    end)
-    if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
-        debugWarn("AutoBuyPets", "Webhook send failed")
-    end
-end
-
-local petInFlight = setmetatable({}, { __mode = "k" })
-local pendingGuids = {}
-
-local function findGuidForPet(petName)
-    if not wildPetSpawns then return nil end
-    for _, child in ipairs(wildPetSpawns:GetChildren()) do
-        local pn, g = parseWildPetName(child.Name)
-        if pn == petName and g then return g end
-    end
-    return nil
-end
-
-local function tryBuyPet(refPart)
-    if not Options.BuyPetsEnabled.Value then return end
-    if petInFlight[refPart] then return end
-
-    local owner = refPart:GetAttribute("OwnerName")
-    if owner and #owner > 1 then return end
-
-    local petName = refPart:GetAttribute("PetName")
-    local data = petName and PetData[petName]
-    if not data then return end
-    if not shouldBuyPet(data) then return end
-
-    local price = refPart:GetAttribute("Price") or data.BasePrice
-    if not price or getBalance() < price then return end
-
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    petInFlight[refPart] = true
-
-    local parent = refPart.Parent
-    if parent then
-        local _, g = parseWildPetName(parent.Name)
-        if g then pendingGuids[petName] = g end
-    end
-
-    teleport(refPart.Position + Vector3.new(0, 3, 0))
-    task.wait(0.2)
-    local ok, err = pcall(function()
-        Remotes.WildPetTame:Fire(refPart)
-    end)
-    if not ok then
-        debugWarn("AutoBuyPets", "WildPetTame fire failed:", err)
-    end
-    task.wait(0.1)
-    petInFlight[refPart] = nil
-end
-
-if Remotes.WildPetCollected then
-    Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
-        local petName = select(2, ...)
-        if not petName then return end
-        local data = PetData[petName]
-        if not data then return end
-        local price = data.BasePrice or 0
-        local oneIn = calcOneIn(data.SpawnChance)
-        local guid = pendingGuids[petName] or findGuidForPet(petName)
-        pendingGuids[petName] = nil
-        task.spawn(sendPetWebhook, data, price, oneIn, guid)
-    end)
-end
-
-if wildPetRef then
-    wildPetRef.ChildAdded:Connect(function(refPart)
-        task.spawn(tryBuyPet, refPart)
-    end)
-
-    task.spawn(function()
-        while true do
-            task.wait(15)
-            for _, refPart in ipairs(wildPetRef:GetChildren()) do
-                task.spawn(tryBuyPet, refPart)
-            end
-        end
-    end)
-end
-local sniperIconCache = {}
-local sniperIconOrder, sniperIconHead = {}, 1
-local SNIPER_ICON_CACHE_MAX = 2000
-
-local function sniperCacheIcon(key, val)
-    sniperIconCache[key] = val
-    sniperIconOrder[#sniperIconOrder + 1] = key
-    if #sniperIconOrder - sniperIconHead + 1 > SNIPER_ICON_CACHE_MAX then
-        sniperIconCache[sniperIconOrder[sniperIconHead]] = nil
-        sniperIconOrder[sniperIconHead] = nil
-        sniperIconHead += 1
-    end
-end
+-- Simple timestamp-based icon cache (no LRU linked list)
+local sniperIconCache = {}  -- assetNumber -> {url, timestamp}
+local SNIPER_ICON_TTL = 3600  -- 1 hour
 
 local function sniperGetIconUrl(iconAssetId)
     if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
     local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
     if not assetNumber then return nil end
-    if sniperIconCache[assetNumber] then return sniperIconCache[assetNumber] end
+
+    local cached = sniperIconCache[assetNumber]
+    if cached and os.clock() - cached.timestamp < SNIPER_ICON_TTL then
+        return cached.url
+    end
 
     for attempt = 1, 25 do
         local url
@@ -2465,7 +2316,7 @@ local function sniperGetIconUrl(iconAssetId)
             end
         end)
         if url then
-            sniperCacheIcon(assetNumber, url)
+            sniperIconCache[assetNumber] = { url = url, timestamp = os.clock() }
             return url
         end
         task.wait(math.min(0.2 * attempt, 2))
@@ -2575,7 +2426,7 @@ end
 
 local sniperSkippedSent = {}
 local sniperConfirmedGuids = {}
-local sniperBuying = {}
+local sniperBuying = {}      -- in-flight guids for sniper
 local sniperPendingConfirm = {}
 
 local function sniperNorm(s)
@@ -2612,7 +2463,7 @@ end
 
 local SniperBuyState = { active = 0 }
 
-local function sniperExecuteBuy(refPart, petName, data, guid)
+local function sniperExecuteBuy(refPart, petName, data, guid, oneIn)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -2652,7 +2503,7 @@ local function sniperExecuteBuy(refPart, petName, data, guid)
         sniperPendingConfirm[petName] = nil
         if meta then
             task.spawn(sniperSendWebhook, data, refPart:GetAttribute("Price") or data.BasePrice or 0,
-                calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, false)
+                oneIn, guid, meta.State, meta.SpawnedAt, false)
         end
     end
 end
@@ -2673,8 +2524,10 @@ local function sniperEvaluate(refPart)
     if not sniperShouldBuy(petName, data) then
         if Options.SniperSendSkipped.Value and guid and not sniperSkippedSent[guid] then
             sniperSkippedSent[guid] = true
+            -- Reuse the computed oneIn? Actually we need oneIn for skipped too, compute here
+            local oneIn = calcOneIn(data.SpawnChance)
             task.spawn(sniperSendWebhook, data, data.BasePrice or 0,
-                calcOneIn(data.SpawnChance), guid,
+                oneIn, guid,
                 refPart:GetAttribute("State"), refPart:GetAttribute("SpawnedAt"), false)
         end
         return nil
@@ -2692,7 +2545,7 @@ end
 local function sniperProcessCandidate(c)
     SniperBuyState.active += 1
     if c.guid then sniperBuying[c.guid] = true end
-    local ok, err = pcall(sniperExecuteBuy, c.refPart, c.petName, c.data, c.guid)
+    local ok, err = pcall(sniperExecuteBuy, c.refPart, c.petName, c.data, c.guid, c.oneIn)
     if not ok then
         debugWarn("Sniper", "executeBuy errored:", err)
     end
@@ -2719,8 +2572,10 @@ if Remotes.WildPetCollected then
         local guid = meta.guid
         if guid then sniperConfirmedGuids[guid] = true end
         sniperPendingConfirm[petName] = nil
+        -- oneIn computed in sniperSendWebhook? Actually we need oneIn; we can compute now or pass earlier. We'll compute here.
+        local oneIn = calcOneIn(data.SpawnChance)
         task.spawn(sniperSendWebhook, data, data.BasePrice or 0,
-            calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, true)
+            oneIn, guid, meta.State, meta.SpawnedAt, true)
         debugLog("Sniper", "Confirmed snipe:", petName)
     end)
 end
@@ -2742,4 +2597,91 @@ if wildPetRef then
         end
     end)
 end
+
+-- Auto Buy Pets (non-sniper) - use a simple set for in-flight guids instead of weak table
+local wildInFlightGuids = {}
+
+local function findGuidForPet(petName)
+    if not wildPetSpawns then return nil end
+    for _, child in ipairs(wildPetSpawns:GetChildren()) do
+        local pn, g = parseWildPetName(child.Name)
+        if pn == petName and g then return g end
+    end
+    return nil
+end
+
+local function tryBuyPet(refPart)
+    if not Options.BuyPetsEnabled.Value then return end
+
+    local owner = refPart:GetAttribute("OwnerName")
+    if owner and #owner > 1 then return end
+
+    local petName = refPart:GetAttribute("PetName")
+    local data = petName and PetData[petName]
+    if not data then return end
+    if not shouldBuyPet(data) then return end
+
+    local price = refPart:GetAttribute("Price") or data.BasePrice
+    if not price or getBalance() < price then return end
+
+    -- Get guid and check if already in flight
+    local guid = select(2, parseWildPetName(refPart.Name)) or refPart.Name:match("^WildPet_(.+)$")
+    if guid and wildInFlightGuids[guid] then return end
+    if guid then wildInFlightGuids[guid] = true end
+
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then
+        if guid then wildInFlightGuids[guid] = nil end
+        return
+    end
+
+    if guid then pendingGuids[petName] = guid end
+
+    teleport(refPart.Position + Vector3.new(0, 3, 0))
+    task.wait(0.2)
+    local ok, err = pcall(function()
+        Remotes.WildPetTame:Fire(refPart)
+    end)
+    if not ok then
+        debugWarn("AutoBuyPets", "WildPetTame fire failed:", err)
+    end
+    task.wait(0.1)
+
+    -- Cleanup: the guid is removed when collected or after a timeout
+    task.delay(10, function()
+        if guid then wildInFlightGuids[guid] = nil end
+    end)
+end
+
+if Remotes.WildPetCollected then
+    Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
+        local petName = select(2, ...)
+        if not petName then return end
+        local data = PetData[petName]
+        if not data then return end
+        local price = data.BasePrice or 0
+        local oneIn = calcOneIn(data.SpawnChance)
+        local guid = pendingGuids[petName] or findGuidForPet(petName)
+        pendingGuids[petName] = nil
+        if guid then wildInFlightGuids[guid] = nil end
+        task.spawn(sendPetWebhook, data, price, oneIn, guid)
+    end)
+end
+
+if wildPetRef then
+    wildPetRef.ChildAdded:Connect(function(refPart)
+        task.spawn(tryBuyPet, refPart)
+    end)
+
+    task.spawn(function()
+        while true do
+            task.wait(15)
+            for _, refPart in ipairs(wildPetRef:GetChildren()) do
+                task.spawn(tryBuyPet, refPart)
+            end
+        end
+    end)
+end
+
 Window:SelectTab(1)
