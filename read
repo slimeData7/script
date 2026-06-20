@@ -11,12 +11,11 @@ local PetData = require(SharedData:WaitForChild("PetData"))
 local CrateData = require(SharedModules:WaitForChild("CrateData"))
 local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
 
-getgenv().IdiotHubDebug = getgenv().IdiotHubDebug or true
+getgenv().IdiotHubDebug = false
 getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
+getgenv().IdiotHubSilent = getgenv().IdiotHubSilent or false
 
 local MAX_LOG_LINES = 300
-
--- FIX: Combined settle constants
 local SETTLE_TIME = 0.1
 
 local function debugLog(tag, ...)
@@ -28,7 +27,7 @@ local function debugLog(tag, ...)
     local log = getgenv().IdiotHubLog
     log[#log + 1] = { text = line, time = os.time(), level = "info" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
         print("[IdiotHub]", "[" .. tag .. "]", ...)
     end
 end
@@ -42,7 +41,7 @@ local function debugWarn(tag, ...)
     local log = getgenv().IdiotHubLog
     log[#log + 1] = { text = line, time = os.time(), level = "warn" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
         warn("[IdiotHub]", "[" .. tag .. "]", ...)
     end
 end
@@ -173,6 +172,7 @@ local function logToggle(name, label)
         debugLog(label or name, state and "enabled" or "disabled")
     end
 end
+
 local Window = Fluent:CreateWindow({
     Title = "IdiotHub",
     SubTitle = "discord.gg/idiothub",
@@ -194,6 +194,7 @@ local Tabs = {
 }
 
 local Options = Fluent.Options
+
 Tabs.Main:AddParagraph({
     Title = "Script Version",
     Content = "IdiotHub 1.1.0"
@@ -313,6 +314,7 @@ Tabs.Farming:AddToggle("SprinklerEnabled", {
     Default = false
 })
 Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled", "Auto Sprinkler"))
+
 Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
 
 Tabs.Selling:AddDropdown("SellMode", {
@@ -473,6 +475,7 @@ Tabs.Buying:AddToggle("BuySlotsEnabled", {
     Default = false
 })
 Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled", "Auto Buy Pet Slots"))
+
 Tabs.Pets:AddParagraph({ Title = "Auto Buy Pets", Content = "" })
 
 local TargetRarityValues = GetPetRarities()
@@ -623,6 +626,7 @@ Tabs.Opening:AddToggle("OpenCratesEnabled", {
     Default = false
 })
 Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Crates"))
+
 Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
 
 Tabs.Settings:AddToggle("OptimisationEnabled", {
@@ -632,12 +636,21 @@ Tabs.Settings:AddToggle("OptimisationEnabled", {
 Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled", "Performance Optimisation"))
 
 Tabs.Settings:AddToggle("DebugConsoleEnabled", {
-    Title = "Enabled",
-    Default = true
+    Title = "Debug Console",
+    Default = false
 })
 Options.DebugConsoleEnabled:OnChanged(function()
     getgenv().IdiotHubDebug = Options.DebugConsoleEnabled.Value
     debugLog("Debug Console", Options.DebugConsoleEnabled.Value and "enabled" or "disabled")
+end)
+
+Tabs.Settings:AddToggle("SilentMode", {
+    Title = "Silent Mode (suppress all prints)",
+    Default = false
+})
+Options.SilentMode:OnChanged(function()
+    getgenv().IdiotHubSilent = Options.SilentMode.Value
+    debugLog("Silent Mode", Options.SilentMode.Value and "enabled" or "disabled")
 end)
 
 Tabs.Settings:AddButton({
@@ -714,6 +727,7 @@ Tabs.Settings:AddButton({
         end
     end
 })
+
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local TweenService = game:GetService("TweenService")
@@ -873,6 +887,7 @@ local function isSelected(set, name)
     if set == nil or next(set) == nil then return true end
     return set[name] == true
 end
+
 getgenv().tweenSpeed = getgenv().tweenSpeed or 30
 getgenv().tweening = getgenv().tweening or false
 getgenv().stuffPositions = getgenv().stuffPositions or {
@@ -1064,6 +1079,7 @@ local function teleport(target, teleportDirect)
     end
     return true
 end
+
 local function matchesList(set, value)
     return isSelected(set, value or "Normal")
 end
@@ -1075,7 +1091,6 @@ local function checkFruitCollect(mutationSet, variantSet, instantMutated, mutati
     return instant or (maxAge > 0 and age >= maxAge)
 end
 
--- FIX: removed _fruitCountAll, only keep _fruitCountNonFav
 local _fruitCountNonFav = 0
 local _seedInventory = {}
 local _sprinklerInventory = {}
@@ -1154,7 +1169,7 @@ LocalPlayer.ChildAdded:Connect(function(c)
 end)
 
 local function getFruitCount(ignoreFavs)
-    return ignoreFavs and _fruitCountNonFav or 0  -- FIX: use 0 for all, but since we removed all count, we only support ignoreFavs now
+    return ignoreFavs and _fruitCountNonFav or 0
 end
 
 local DENSITY_CELL = 5
@@ -1449,8 +1464,8 @@ task.spawn(function()
         end
     end
 end)
+
 task.spawn(function()
-    -- FIX: use SETTLE_TIME constant
     while true do
         task.wait(2)
         if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
@@ -1550,6 +1565,7 @@ task.spawn(function()
         end
     end
 end)
+
 local RadiusMap = {}
 do
     local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
@@ -1617,7 +1633,6 @@ local function scoreSprinklerCands()
 end
 
 task.spawn(function()
-    -- FIX: use SETTLE_TIME constant
     while true do
         task.wait(1)
         if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
@@ -1688,6 +1703,7 @@ task.spawn(function()
         end
     end
 end)
+
 local _fruitReg = {}
 local _fruitConns = {}
 local _sellValueCache = {}
@@ -1908,6 +1924,7 @@ task.spawn(function()
         end
     end
 end)
+
 task.spawn(function()
     while true do
         task.wait(10)
@@ -2068,6 +2085,7 @@ task.spawn(function()
         end
     end
 end)
+
 local function buildPetIndex()
     local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
     local byName = {}
@@ -2261,6 +2279,7 @@ task.spawn(function()
         end
     end
 end)
+
 local function getIconUrl(iconCache, iconAssetId)
     if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
     local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
@@ -2467,4 +2486,5 @@ if wildPetRef then
         end
     end)
 end
+
 Window:SelectTab(1)
