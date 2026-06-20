@@ -61,7 +61,6 @@ end
 local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
 
 local function withAll(list)
-    table.sort(list)
     table.insert(list, 1, "All")
     return list
 end
@@ -270,13 +269,13 @@ local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
 HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
 
 Tabs.Farming:AddToggle("HarvestInstantMutated", {
-    Title = "Enabled",
+    Title = "Collect Mutated Fruit On Sight",
     Default = false
 })
 Options.HarvestInstantMutated:OnChanged(logToggle("HarvestInstantMutated", "Collect Mutated Fruit On Sight"))
 
 Tabs.Farming:AddToggle("HarvestEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Harvest",
     Default = false
 })
 Options.HarvestEnabled:OnChanged(logToggle("HarvestEnabled", "Auto Harvest"))
@@ -293,7 +292,7 @@ local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
 HandleAllSelection(PlantSeedsDropdown, PlantSeedValues, "PlantSeeds")
 
 Tabs.Farming:AddToggle("PlantEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Plant",
     Default = false
 })
 Options.PlantEnabled:OnChanged(logToggle("PlantEnabled", "Auto Plant"))
@@ -310,7 +309,7 @@ local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
 HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues, "SprinklersToUse")
 
 Tabs.Farming:AddToggle("SprinklerEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Sprinkler",
     Default = false
 })
 Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled", "Auto Sprinkler"))
@@ -345,7 +344,7 @@ Tabs.Selling:AddInput("SellDelay", {
 })
 
 Tabs.Selling:AddToggle("SellEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Sell",
     Default = false
 })
 Options.SellEnabled:OnChanged(logToggle("SellEnabled", "Auto Sell"))
@@ -380,7 +379,7 @@ Tabs.Selling:AddInput("FavoriteMinPrice", {
 })
 
 Tabs.Selling:AddToggle("FavoriteEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Favorite",
     Default = false
 })
 Options.FavoriteEnabled:OnChanged(logToggle("FavoriteEnabled", "Auto Favorite"))
@@ -405,7 +404,7 @@ Tabs.Buying:AddInput("AmountPerSeed", {
 })
 
 Tabs.Buying:AddToggle("BuySeedsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Buy Seeds",
     Default = false
 })
 Options.BuySeedsEnabled:OnChanged(logToggle("BuySeedsEnabled", "Auto Buy Seeds"))
@@ -430,7 +429,7 @@ Tabs.Buying:AddInput("AmountPerGear", {
 })
 
 Tabs.Buying:AddToggle("BuyGearsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Buy Gears",
     Default = false
 })
 Options.BuyGearsEnabled:OnChanged(logToggle("BuyGearsEnabled", "Auto Buy Gears"))
@@ -455,7 +454,7 @@ Tabs.Buying:AddInput("AmountPerCrate", {
 })
 
 Tabs.Buying:AddToggle("BuyCratesEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Buy Crates",
     Default = false
 })
 Options.BuyCratesEnabled:OnChanged(logToggle("BuyCratesEnabled", "Auto Buy Crates"))
@@ -471,7 +470,7 @@ Tabs.Buying:AddInput("MaxSlots", {
 })
 
 Tabs.Buying:AddToggle("BuySlotsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Buy Pet Slots",
     Default = false
 })
 Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled", "Auto Buy Pet Slots"))
@@ -520,8 +519,14 @@ Tabs.Pets:AddInput("PetsNote", {
     Finished = true
 })
 
+Tabs.Pets:AddToggle("PetsWebhookEnabled", {
+    Title = "Enable Webhook",
+    Default = false
+})
+Options.PetsWebhookEnabled:OnChanged(logToggle("PetsWebhookEnabled", "Pets Webhook"))
+
 Tabs.Pets:AddToggle("BuyPetsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Buy Pets",
     Default = false
 })
 Options.BuyPetsEnabled:OnChanged(logToggle("BuyPetsEnabled", "Auto Buy Pets"))
@@ -547,7 +552,7 @@ local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
 HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues, "BlacklistedPets")
 
 Tabs.Pets:AddToggle("EquipPetsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Equip Pets",
     Default = false
 })
 Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled", "Auto Equip Pets"))
@@ -572,7 +577,7 @@ Tabs.Opening:AddInput("OpenEggsAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenEggsEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Open Eggs",
     Default = false
 })
 Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled", "Auto Open Eggs"))
@@ -597,7 +602,7 @@ Tabs.Opening:AddInput("OpenPacksAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenPacksEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Open Seed Packs",
     Default = false
 })
 Options.OpenPacksEnabled:OnChanged(logToggle("OpenPacksEnabled", "Auto Open Seed Packs"))
@@ -622,7 +627,7 @@ Tabs.Opening:AddInput("OpenCratesAmount", {
 })
 
 Tabs.Opening:AddToggle("OpenCratesEnabled", {
-    Title = "Enabled",
+    Title = "Enable Auto Open Crates",
     Default = false
 })
 Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Crates"))
@@ -630,7 +635,7 @@ Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Cr
 Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
 
 Tabs.Settings:AddToggle("OptimisationEnabled", {
-    Title = "Enabled",
+    Title = "Enable Performance Optimisation",
     Default = false
 })
 Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled", "Performance Optimisation"))
@@ -677,7 +682,7 @@ Tabs.Settings:AddButton({
 Tabs.Settings:AddParagraph({ Title = "Interface", Content = "" })
 
 Tabs.Settings:AddToggle("AcrylicEnabled", {
-    Title = "Enabled",
+    Title = "Enable Acrylic Background",
     Default = true
 })
 Options.AcrylicEnabled:OnChanged(logToggle("AcrylicEnabled", "Acrylic Background"))
@@ -1939,7 +1944,7 @@ task.spawn(function()
                         for i = 1, toBuy do
                             if getBalance() < price then break end
                             Remotes.PurchaseSeed:Fire(seedName)
-                            task.wait(0.08)
+                            task.wait()
                         end
                     end
                 end
@@ -1962,7 +1967,7 @@ task.spawn(function()
                         for i = 1, toBuy do
                             if getBalance() < price then break end
                             Remotes.PurchaseGear:Fire(gearName)
-                            task.wait(0.08)
+                            task.wait()
                         end
                     end
                 end
@@ -1988,7 +1993,7 @@ task.spawn(function()
                             for i = 1, toBuy do
                                 if getBalance() < price then break end
                                 Remotes.PurchaseCrate:Fire(crateName)
-                                task.wait(0.08)
+                                task.wait()
                             end
                         end
                     end
@@ -2309,6 +2314,7 @@ end
 local _petBuyIconCache = {}
 
 local function sendBuyPetWebhook(data, price, oneIn, guid)
+    if not Options.PetsWebhookEnabled.Value then return end
     local webhookUrl = Options.PetsWebhookURL.Value
     local minLuck = tonumber(Options.MinLuckSent.Value) or 0
     if oneIn < minLuck then return end
