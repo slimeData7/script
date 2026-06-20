@@ -23,6 +23,18 @@ local function debugWarn(tag, ...)
     warn("[IdiotHub]", "[" .. tag .. "]", ...)
 end
 
+local function featureLoop(name, interval, body)
+    task.spawn(function()
+        while true do
+            task.wait(interval)
+            local ok, err = xpcall(body, debug.traceback)
+            if not ok then
+                warn("[IdiotHub]", "[" .. name .. "]", "errored:", err)
+            end
+        end
+    end)
+end
+
 local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
 
 local function withAll(list)
@@ -31,16 +43,17 @@ local function withAll(list)
     return list
 end
 
-local function safeList(builder)
-    local ok, result = pcall(builder)
+local function safeList(label, builder)
+    local ok, result = xpcall(builder, debug.traceback)
     if ok and type(result) == "table" then
         return withAll(result)
     end
+    warn("[IdiotHub]", "[" .. label .. "]", "list build failed:", result)
     return withAll({})
 end
 
 local function GetMutationNames()
-    return safeList(function()
+    return safeList("Mutations", function()
         local list = {}
         for _, name in ipairs(MUTATIONS) do
             table.insert(list, name)
@@ -50,7 +63,7 @@ local function GetMutationNames()
 end
 
 local function GetSeedNames()
-    return safeList(function()
+    return safeList("Seeds", function()
         local list = {}
         for _, seed in ipairs(SeedData) do
             table.insert(list, seed.SeedName)
@@ -60,7 +73,7 @@ local function GetSeedNames()
 end
 
 local function GetFruitNames()
-    return safeList(function()
+    return safeList("Fruits", function()
         local list = {}
         for name in pairs(SellValueData) do
             table.insert(list, name)
@@ -70,7 +83,7 @@ local function GetFruitNames()
 end
 
 local function GetPetRarities()
-    return safeList(function()
+    return safeList("PetRarities", function()
         local list, seen = {}, {}
         for _, pet in pairs(PetData) do
             if type(pet) == "table" and pet.Rarity and not seen[pet.Rarity] then
@@ -83,7 +96,7 @@ local function GetPetRarities()
 end
 
 local function GetPetNames()
-    return safeList(function()
+    return safeList("PetNames", function()
         local list = {}
         for _, pet in pairs(PetData) do
             if type(pet) == "table" and pet.DisplayName then
@@ -95,7 +108,7 @@ local function GetPetNames()
 end
 
 local function GetCrateNames()
-    return safeList(function()
+    return safeList("Crates", function()
         local list = {}
         for _, crate in ipairs(CrateData.GetAllCrates()) do
             table.insert(list, type(crate) == "table" and crate.Name or crate)
@@ -105,7 +118,7 @@ local function GetCrateNames()
 end
 
 local function GetGearNames()
-    return safeList(function()
+    return safeList("Gears", function()
         local list = {}
         for _, gear in ipairs(GearShopData.Data) do
             table.insert(list, gear.ItemName)
@@ -143,7 +156,7 @@ local Window = Fluent:CreateWindow({
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true,
-    Theme = "Rose",
+    Theme = "Dark",
     MinimizeKey = Enum.KeyCode.LeftControl
 })
 
@@ -1723,7 +1736,10 @@ local function _getCachedSellValue(tool)
     local r = _fruitReg[tool]
     if not r then return nil end
     local ok, computed = pcall(FruitValueCalc, r.name, tool:GetAttribute("SizeMultiplier") or 1, r.mutation, LocalPlayer, tool:GetAttribute("DecayAlpha"))
-    if not ok then computed = nil end
+    if not ok then
+        debugWarn("SellValue", "FruitValueCalc failed for", r.name, "-", computed)
+        computed = nil
+    end
     _sellValueCache[tool] = computed ~= nil and computed or SELL_MISS
     return computed
 end
@@ -2235,9 +2251,9 @@ task.spawn(function()
         if Options.EquipPetsEnabled.Value and playerAlive() and not _petsSyncing and _petsDirty then
             _petsDirty = false
             _petsSyncing = true
-            local ok, err = pcall(syncPets)
+            local ok, err = xpcall(syncPets, debug.traceback)
             if not ok then
-                debugWarn("AutoEquip", "syncPets errored:", err)
+                warn("[IdiotHub]", "[AutoEquip]", "syncPets errored:", err)
             end
             _petsSyncing = false
         end
