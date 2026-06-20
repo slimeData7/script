@@ -308,29 +308,6 @@ Tabs.Main:AddButton({
 
 G.NotifyParagraph = Tabs.Main:AddParagraph({ Title = "Recent Activity", Content = "Nothing yet." })
 
-Tabs.Main:AddParagraph({ Title = "Theme", Content = "Pick a look that's easy on the eyes" })
-
-local THEME_NAMES = {
-    "Rose", "Amethyst", "Aqua", "Green", "Orange",
-    "Dark", "Darker", "Light", "Catppuccin Mocha", "Catppuccin Latte",
-}
-
-for _, themeName in ipairs(THEME_NAMES) do
-    Tabs.Main:AddButton({
-        Title = themeName,
-        Callback = function()
-            local ok = pcall(function()
-                Fluent:SetTheme(themeName)
-            end)
-            if ok then
-                debugLog("Theme", "switched to", themeName)
-            else
-                debugWarn("Theme", "SetTheme not supported by this Fluent build")
-            end
-        end
-    })
-end
-
 addFeatureHeader(Tabs.Automation, "Auto Harvest", "Collects fruit that matches your mutation/variant filters once it hits max age, or instantly if mutated and that's enabled below.")
 
 local HarvestMutationValues = GetMutationNames()
