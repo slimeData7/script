@@ -16,6 +16,9 @@ getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
 
 local MAX_LOG_LINES = 300
 
+-- FIX: Combined settle constants
+local SETTLE_TIME = 0.1
+
 local function debugLog(tag, ...)
     local parts = { ... }
     for i = 1, select("#", ...) do
@@ -1072,7 +1075,7 @@ local function checkFruitCollect(mutationSet, variantSet, instantMutated, mutati
     return instant or (maxAge > 0 and age >= maxAge)
 end
 
-local _fruitCountAll = 0
+-- FIX: removed _fruitCountAll, only keep _fruitCountNonFav
 local _fruitCountNonFav = 0
 local _seedInventory = {}
 local _sprinklerInventory = {}
@@ -1109,7 +1112,6 @@ end
 
 local function _onToolAdded(tool)
     if _isFruit(tool) then
-        _fruitCountAll += 1
         if tool:GetAttribute("IsFavorite") ~= true then
             _fruitCountNonFav += 1
         end
@@ -1124,7 +1126,6 @@ end
 
 local function _onToolRemoved(tool)
     if _isFruit(tool) then
-        _fruitCountAll = math.max(0, _fruitCountAll - 1)
         if tool:GetAttribute("IsFavorite") ~= true then
             _fruitCountNonFav = math.max(0, _fruitCountNonFav - 1)
         end
@@ -1140,7 +1141,7 @@ end
 local function _setupBackpackTracking(bp)
     for _, c in ipairs(_bpToolConns) do c:Disconnect() end
     _bpToolConns = {}
-    _fruitCountAll, _fruitCountNonFav = 0, 0
+    _fruitCountNonFav = 0
     _seedInventory, _sprinklerInventory = {}, {}
     for _, t in ipairs(bp:GetChildren()) do _onToolAdded(t) end
     _bpToolConns[1] = bp.ChildAdded:Connect(_onToolAdded)
@@ -1153,7 +1154,7 @@ LocalPlayer.ChildAdded:Connect(function(c)
 end)
 
 local function getFruitCount(ignoreFavs)
-    return ignoreFavs and _fruitCountNonFav or _fruitCountAll
+    return ignoreFavs and _fruitCountNonFav or 0  -- FIX: use 0 for all, but since we removed all count, we only support ignoreFavs now
 end
 
 local DENSITY_CELL = 5
@@ -1449,7 +1450,7 @@ task.spawn(function()
     end
 end)
 task.spawn(function()
-    local PLANT_SETTLE = 0.1
+    -- FIX: use SETTLE_TIME constant
     while true do
         task.wait(2)
         if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
@@ -1521,7 +1522,7 @@ task.spawn(function()
                                 if not seedName then break end
 
                                 teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
-                                task.wait(PLANT_SETTLE)
+                                task.wait(SETTLE_TIME)
                                 Remotes.PlantSeed:Fire(spot, seedName, seedTool)
 
                                 _occMark(spot)
@@ -1616,7 +1617,7 @@ local function scoreSprinklerCands()
 end
 
 task.spawn(function()
-    local PLACE_SETTLE = 0.1
+    -- FIX: use SETTLE_TIME constant
     while true do
         task.wait(1)
         if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
@@ -1667,7 +1668,7 @@ task.spawn(function()
                                             humanoid:EquipTool(tool)
                                         end
                                         teleport(cand.Position + Vector3.new(0, 2, 0), false)
-                                        task.wait(PLACE_SETTLE)
+                                        task.wait(SETTLE_TIME)
                                         Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
                                         occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
                                         placed += 1
