@@ -228,9 +228,9 @@ Tabs.Main:AddParagraph({
     Content = "Pick a look that's easy on the eyes"
 })
 
+-- Removed orange, green, and both Catppuccin themes
 local THEME_NAMES = {
-    "Rose", "Amethyst", "Aqua", "Green", "Orange",
-    "Dark", "Darker", "Light", "Catppuccin Mocha", "Catppuccin Latte",
+    "Rose", "Amethyst", "Aqua", "Dark", "Darker", "Light",
 }
 
 for _, themeName in ipairs(THEME_NAMES) do
@@ -2280,211 +2280,325 @@ task.spawn(function()
     end
 end)
 
-local function getIconUrl(iconCache, iconAssetId)
+-- ===== NEW Auto Buy Pets logic (based on working code) =====
+local AUTO_BUY_PETS = {
+    CONFIRM_TIMEOUT = 2,
+    BUY_RETRIES = 2,
+    ICON_RETRIES = 25,
+}
+
+local BuyState = { active = 0 }
+local iconCache = {}
+local iconOrder, iconHead = {}, 1
+local MAX_CACHE = 2000
+
+local function cacheIcon(key, val)
+    iconCache[key] = val
+    iconOrder[#iconOrder + 1] = key
+    if #iconOrder - iconHead + 1 > MAX_CACHE then
+        iconCache[iconOrder[iconHead]] = nil
+        iconOrder[iconHead] = nil
+        iconHead += 1
+    end
+end
+
+local function getIconUrl(iconAssetId)
     if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
     local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
     if not assetNumber then return nil end
     if iconCache[assetNumber] then return iconCache[assetNumber] end
 
-    local thumbnailUrl = nil
-    pcall(function()
-        local r = request({
-            Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
-            Method = "GET",
-        })
-        if r and r.Success then
-            local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
-            if ok and decoded and decoded.data and decoded.data[1] then
-                local d = decoded.data[1]
-                if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
-                    thumbnailUrl = d.imageUrl
+    for attempt = 1, AUTO_BUY_PETS.ICON_RETRIES do
+        local url
+        pcall(function()
+            local r = request({
+                Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
+                Method = "GET"
+            })
+            if r and r.Success then
+                local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
+                if ok and decoded and decoded.data and decoded.data[1] then
+                    local d = decoded.data[1]
+                    if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
+                        url = d.imageUrl
+                    end
                 end
             end
+        end)
+        if url then
+            cacheIcon(assetNumber, url)
+            return url
         end
-    end)
-    if thumbnailUrl then iconCache[assetNumber] = thumbnailUrl end
-    return thumbnailUrl
+        task.wait(math.min(0.2 * attempt, 2))
+    end
+    return nil
 end
 
-local _petBuyIconCache = {}
+local function makeBoundedSet(limit)
+    local set, order, head = {}, {}, 1
+    return {
+        has = function(k) return set[k] ~= nil end,
+        add = function(k)
+            if set[k] then return end
+            set[k] = true
+            order[#order + 1] = k
+            if #order - head + 1 > limit then
+                set[order[head]] = nil
+                order[head] = nil
+                head += 1
+            end
+        end,
+    }
+end
 
-local function sendBuyPetWebhook(data, price, oneIn, guid)
-    local webhookUrl = Options.PetsWebhookURL.Value
+local skippedSent = makeBoundedSet(MAX_CACHE)
+local confirmedGuids = makeBoundedSet(MAX_CACHE)
+local buying = {}
+local pendingConfirm = {}
+
+local webhookQueue = {}
+local webhookRunning = false
+
+local function processWebhookQueue()
+    if webhookRunning then return end
+    webhookRunning = true
+    task.spawn(function()
+        while #webhookQueue > 0 do
+            local payload = table.remove(webhookQueue, 1)
+            local attempt = 0
+            while attempt < 5 do
+                attempt += 1
+                local resp
+                pcall(function()
+                    resp = request({
+                        Url = Options.PetsWebhookURL.Value,
+                        Method = "POST",
+                        Headers = { ["Content-Type"] = "application/json" },
+                        Body = payload
+                    })
+                end)
+                if resp and resp.StatusCode == 429 then
+                    local retryAfter = 1
+                    pcall(function()
+                        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, resp.Body)
+                        if ok and decoded and decoded.retry_after then
+                            retryAfter = tonumber(decoded.retry_after) or 1
+                        end
+                    end)
+                    task.wait(retryAfter)
+                else
+                    break
+                end
+            end
+            task.wait(0.4)
+        end
+        webhookRunning = false
+    end)
+end
+
+local function queueWebhook(embed, mention)
+    local payload
+    if not pcall(function()
+        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
+    end) then return end
+    table.insert(webhookQueue, payload)
+    processWebhookQueue()
+end
+
+local function redactGuid(guid)
+    if not guid or guid == "" then return "N/A" end
+    return "||...." .. guid:sub(-4) .. "||"
+end
+
+local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped)
+    if not data then return end
+    oneIn = oneIn or 0
     local minLuck = tonumber(Options.MinLuckSent.Value) or 0
     if oneIn < minLuck then return end
-    if not webhookUrl or webhookUrl == "" then return end
+    local webhookUrl = Options.PetsWebhookURL.Value
+    if webhookUrl == "" then return end
 
-    local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
-    local title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
+    local display = tostring(data.DisplayName or "Unknown")
+    local article = display:match("^[AEIOUaeiou]") and "an" or "a"
+    local statusNote = sniped
+        and "Pet successfully sniped!"
+        or "Pet was spawned but not sniped (maybe skipped or missed)"
     local fields = {
-        { name = "Player", value = "||" .. LocalPlayer.Name .. "||", inline = true },
         { name = "Price", value = formatNumber(price), inline = true },
-        { name = "Rarity", value = tostring(data.Rarity), inline = true },
+        { name = "Rarity", value = tostring(data.Rarity or "N/A"), inline = true },
+        { name = "State", value = tostring(state or "N/A"), inline = true },
+        { name = "Spawned At", value = spawnedAt and ("<t:" .. math.floor(spawnedAt) .. ":R>") or "N/A", inline = true },
+        { name = "Status", value = statusNote, inline = false },
         { name = "server-job-id", value = tostring(game.JobId), inline = false },
-        { name = "pet-unique-guid", value = tostring(guid or "N/A"), inline = false },
+        { name = "pet-unique-guid", value = redactGuid(guid), inline = false },
     }
     local note = Options.PetsNote.Value
     if note and note ~= "" then
         table.insert(fields, { name = "Note", value = note, inline = false })
     end
     local embed = {
-        title = title,
-        color = 0x5865F2,
+        title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. display .. "!",
+        color = sniped and 0x57F287 or 0xED4245,
         fields = fields,
-        footer = { text = "discord.gg/idiothub" },
+        footer = { text = "discord.gg/idiothub" }
     }
-    local thumbnailUrl = getIconUrl(_petBuyIconCache, data.Image)
-    if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
-
-    local payload
-    local ok = pcall(function()
-        payload = HttpService:JSONEncode({ embeds = { embed } })
-    end)
-    if not ok or not payload then
-        debugWarn("Auto Buy Pets", "Failed to encode webhook payload")
-        return
-    end
-
-    local reqOk, response = pcall(function()
-        return request({
-            Url = webhookUrl,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = payload,
-        })
-    end)
-    if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
-        debugWarn("Auto Buy Pets", "Webhook send failed")
-    end
+    local thumb = getIconUrl(data.Image)
+    if thumb then embed.thumbnail = { url = thumb } end
+    local mention = (sniped and Options.PetsWebhookURL.Value ~= "") and ("<@" .. Options.PetsWebhookURL.Value:match("discord%.com/api/webhooks/(%d+)/") or "") or nil
+    queueWebhook(embed, mention)
 end
 
-local function shouldBuyPet(data)
+local function norm(s)
+    return tostring(s):lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function shouldBuyPet(petName, data)
     local raritySet = selectedSet(Options.TargetRarities)
     local nameSet = selectedSet(Options.TargetPets)
+    -- If both sets are nil (All selected) or empty, allow all
+    if (not raritySet or next(raritySet) == nil) and (not nameSet or next(nameSet) == nil) then
+        return true
+    end
     if nameSet and nameSet[data.DisplayName] then return true end
     if raritySet and raritySet[data.Rarity] then return true end
-    if nameSet == nil or raritySet == nil then return true end
     return false
 end
 
-local petBuying = {}
-local petPendingConfirm = {}
-local petConfirmedGuids = {}
-local PetBuyState = { active = 0 }
-
-local function findGuidForPet(petName)
-    if not wildPetSpawns then return nil end
-    for _, child in ipairs(wildPetSpawns:GetChildren()) do
-        local pn, g = parseWildPetName(child.Name)
-        if pn == petName and g then return g end
-    end
-    return nil
+local function getPetInfo(refPart)
+    local petName = refPart:GetAttribute("PetName")
+    if not petName then return nil end
+    local data = PetData[petName]
+    if not data then return nil end
+    return petName, data
 end
 
-local function executeBuyPet(refPart, petName, data, guid)
+local function waitForAttributes(refPart, timeout)
+    if refPart:GetAttribute("PetName") then return true end
+    local deadline = os.clock() + (timeout or 1)
+    while os.clock() < deadline do
+        if not refPart.Parent then return false end
+        if refPart:GetAttribute("PetName") then return true end
+        task.wait()
+    end
+    return refPart:GetAttribute("PetName") ~= nil
+end
+
+local function executeBuy(refPart, petName, data, guid)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    petPendingConfirm[petName] = {
-        Price = refPart:GetAttribute("Price") or data.BasePrice,
+    pendingConfirm[petName] = {
+        State = refPart:GetAttribute("State"),
+        SpawnedAt = refPart:GetAttribute("SpawnedAt"),
         guid = guid,
     }
 
-    for _ = 0, 2 do
-        if guid and petConfirmedGuids[guid] then break end
+    hrp.CFrame = CFrame.new(refPart.Position + Vector3.new(0, 3, 0))
+
+    for _ = 0, AUTO_BUY_PETS.BUY_RETRIES do
+        if guid and confirmedGuids.has(guid) then break end
         if not refPart.Parent then break end
         local owner = refPart:GetAttribute("OwnerName")
         if owner and #owner > 1 then break end
-
-        teleport(refPart.Position + Vector3.new(0, 3, 0))
-        task.wait(0.2)
-
-        local ok, err = pcall(function()
-            Remotes.WildPetTame:Fire(refPart)
-        end)
-        if not ok then
-            debugWarn("Auto Buy Pets", "WildPetTame fire failed:", err)
-        end
-
-        local deadline = os.clock() + 2
+        Remotes.WildPetTame:Fire(refPart)
+        local deadline = os.clock() + AUTO_BUY_PETS.CONFIRM_TIMEOUT
         while os.clock() < deadline do
-            if guid and petConfirmedGuids[guid] then break end
+            if guid and confirmedGuids.has(guid) then break end
             if not refPart.Parent then break end
             task.wait(0.1)
         end
-        if guid and petConfirmedGuids[guid] then break end
+        if guid and confirmedGuids.has(guid) then break end
     end
 
-    petPendingConfirm[petName] = nil
+    if not (guid and confirmedGuids.has(guid)) then
+        local meta = pendingConfirm[petName]
+        pendingConfirm[petName] = nil
+        if meta then
+            task.spawn(sendPetWebhook, data, refPart:GetAttribute("Price") or data.BasePrice or 0,
+                calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, false)
+        end
+    end
 end
 
-local function tryBuyPet(refPart)
-    if not Options.BuyPetsEnabled.Value then return end
-    if petBuying[refPart] then return end
+local function evaluatePet(refPart)
+    if not Options.BuyPetsEnabled.Value then return nil end
+    if not refPart.Parent then return nil end
 
     local owner = refPart:GetAttribute("OwnerName")
-    if owner and #owner > 1 then return end
+    if owner and #owner > 1 then return nil end
 
-    local petName = refPart:GetAttribute("PetName")
-    local data = petName and PetData[petName]
-    if not data then return end
-    if not shouldBuyPet(data) then return end
+    local petName, data = getPetInfo(refPart)
+    if not data then return nil end
 
-    local price = refPart:GetAttribute("Price") or data.BasePrice
-    if not price or getBalance() < price then return end
-
-    local parent = refPart.Parent
-    local guid = nil
-    if parent then
-        local _, g = parseWildPetName(parent.Name)
-        guid = g
+    if not shouldBuyPet(petName, data) then
+        -- skip logging for skipped pets
+        return nil
     end
-    if guid and (petBuying[guid] or petConfirmedGuids[guid]) then return end
 
-    petBuying[refPart] = true
-    if guid then petBuying[guid] = true end
+    local guid = refPart.Name:match("^WildPet_(.+)$")
+    if guid and (buying[guid] or confirmedGuids.has(guid)) then return nil end
 
-    PetBuyState.active += 1
-    local ok, err = pcall(executeBuyPet, refPart, petName, data, guid)
-    if not ok then
-        debugWarn("Auto Buy Pets", "executeBuyPet errored:", err)
-    end
-    PetBuyState.active -= 1
+    return {
+        refPart = refPart,
+        petName = petName,
+        data = data,
+        guid = guid,
+        oneIn = calcOneIn(data.SpawnChance),
+    }
+end
 
-    petBuying[refPart] = nil
-    if guid then petBuying[guid] = nil end
+local function processCandidate(c)
+    BuyState.active += 1
+    if c.guid then buying[c.guid] = true end
+    pcall(executeBuy, c.refPart, c.petName, c.data, c.guid)
+    if c.guid then buying[c.guid] = nil end
+    BuyState.active -= 1
+end
+
+local function handleSpawn(refPart)
+    task.spawn(function()
+        if not waitForAttributes(refPart, 1) then return end
+        local c = evaluatePet(refPart)
+        if c then processCandidate(c) end
+    end)
 end
 
 if Remotes.WildPetCollected then
     Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
         local petName = select(2, ...)
         if not petName then return end
-        local meta = petPendingConfirm[petName]
+        local meta = pendingConfirm[petName]
+        if not meta then return end
         local data = PetData[petName]
         if not data then return end
-        local guid = meta and meta.guid or findGuidForPet(petName)
-        if guid then petConfirmedGuids[guid] = true end
-        local price = (meta and meta.Price) or data.BasePrice or 0
-        local oneIn = calcOneIn(data.SpawnChance)
-        task.spawn(sendBuyPetWebhook, data, price, oneIn, guid)
-        debugLog("Auto Buy Pets", "Bought", petName)
+        local guid = meta.guid
+        if guid then confirmedGuids.add(guid) end
+        pendingConfirm[petName] = nil
+        task.spawn(sendPetWebhook, data, data.BasePrice or 0,
+            calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, true)
     end)
+end
+
+local function runScan()
+    if not wildPetRef then return end
+    local candidates = {}
+    for _, refPart in ipairs(wildPetRef:GetChildren()) do
+        if waitForAttributes(refPart, 0.25) then
+            local c = evaluatePet(refPart)
+            if c then table.insert(candidates, c) end
+        end
+    end
+    table.sort(candidates, function(a, b) return a.oneIn > b.oneIn end)
+    for _, c in ipairs(candidates) do
+        processCandidate(c)
+    end
 end
 
 if wildPetRef then
-    wildPetRef.ChildAdded:Connect(function(refPart)
-        task.spawn(tryBuyPet, refPart)
-    end)
-
-    task.spawn(function()
-        while true do
-            task.wait(15)
-            for _, refPart in ipairs(wildPetRef:GetChildren()) do
-                task.spawn(tryBuyPet, refPart)
-            end
-        end
-    end)
+    wildPetRef.ChildAdded:Connect(handleSpawn)
 end
+
+runScan()
 
 Window:SelectTab(1)
