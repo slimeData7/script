@@ -194,12 +194,14 @@ local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
 })
 HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues)
 
-Tabs.Farming:AddDropdown("HarvestVariants", {
+local HarvestVariantValues = withAll({ "Normal", "Shiny", "Giant" })
+local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
     Title = "Variants To Collect",
-    Values = { "Normal", "Shiny", "Giant" },
+    Values = HarvestVariantValues,
     Multi = true,
     Default = {}
 })
+HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues)
 
 Tabs.Farming:AddParagraph({ Title = "Auto Plant", Content = "" })
 
@@ -246,12 +248,14 @@ Tabs.Farming:AddToggle("SprinklerEnabled", {
     Default = false
 })
 
-Tabs.Farming:AddDropdown("SprinklersToUse", {
+local SprinklersToUseValues = withAll({ "Basic Sprinkler", "Advanced Sprinkler", "Godly Sprinkler" })
+local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
     Title = "Sprinklers To Use",
-    Values = { "Basic Sprinkler", "Advanced Sprinkler", "Godly Sprinkler" },
+    Values = SprinklersToUseValues,
     Multi = true,
     Default = {}
 })
+HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues)
 
 Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
 
@@ -491,12 +495,14 @@ Tabs.Opening:AddToggle("OpenEggsEnabled", {
     Default = false
 })
 
-Tabs.Opening:AddDropdown("EggsToOpen", {
+local EggsToOpenValues = withAll({ "Common Egg", "Rare Egg", "Legendary Egg" })
+local EggsToOpenDropdown = Tabs.Opening:AddDropdown("EggsToOpen", {
     Title = "Eggs To Open",
-    Values = { "Common Egg", "Rare Egg", "Legendary Egg" },
+    Values = EggsToOpenValues,
     Multi = true,
     Default = {}
 })
+HandleAllSelection(EggsToOpenDropdown, EggsToOpenValues)
 
 Tabs.Opening:AddInput("OpenEggsAmount", {
     Title = "Amount",
@@ -513,12 +519,14 @@ Tabs.Opening:AddToggle("OpenPacksEnabled", {
     Default = false
 })
 
-Tabs.Opening:AddDropdown("PacksToOpen", {
+local PacksToOpenValues = withAll({ "Basic Pack", "Premium Pack" })
+local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
     Title = "Packs To Open",
-    Values = { "Basic Pack", "Premium Pack" },
+    Values = PacksToOpenValues,
     Multi = true,
     Default = {}
 })
+HandleAllSelection(PacksToOpenDropdown, PacksToOpenValues)
 
 Tabs.Opening:AddInput("OpenPacksAmount", {
     Title = "Amount",
@@ -810,7 +818,7 @@ local function selectedSet(dropdownOptions)
 end
 
 local function isSelected(set, name)
-    if set == nil then return true end
+    if set == nil or next(set) == nil then return true end
     return set[name] == true
 end
 
@@ -1658,6 +1666,7 @@ local function _registerFruit(tool)
         id = tool:GetAttribute("Id"),
         name = tool:GetAttribute("FruitName"),
         mutation = tool:GetAttribute("Mutation"),
+        variant = tool:GetAttribute("Variant"),
         weight = tool:GetAttribute("Weight"),
         isFavorite = isFav,
     }
@@ -1668,7 +1677,7 @@ local function _registerFruit(tool)
         _sellSet[tool] = true
     end
 
-    local conns = table.create(5)
+    local conns = table.create(6)
     _fruitConns[tool] = conns
 
     conns[1] = tool:GetAttributeChangedSignal("IsFavorite"):Connect(function()
@@ -1687,6 +1696,11 @@ local function _registerFruit(tool)
     conns[2] = tool:GetAttributeChangedSignal("Mutation"):Connect(function()
         rec.mutation = tool:GetAttribute("Mutation")
         _sellValueCache[tool] = nil
+        _markFavDirty(tool, rec)
+    end)
+
+    conns[6] = tool:GetAttributeChangedSignal("Variant"):Connect(function()
+        rec.variant = tool:GetAttribute("Variant")
         _markFavDirty(tool, rec)
     end)
 
@@ -1773,6 +1787,10 @@ task.spawn(function()
                     if checks["Mutation"] then
                         local mut = rec.mutation
                         if mut and isSelected(mutSet, mut) then shouldFav = true end
+                    end
+                    if not shouldFav and checks["Variant"] then
+                        local variant = rec.variant
+                        if variant and variant ~= "Normal" then shouldFav = true end
                     end
                     if not shouldFav and checks["Sell Price"] then
                         local sp = _getCachedSellValue(tool)
