@@ -1,20 +1,71 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local SharedModules = ReplicatedStorage:WaitForChild("SharedModules")
 local SharedData = ReplicatedStorage:WaitForChild("SharedData")
+local ClientModules = ReplicatedStorage:WaitForChild("ClientModules")
 
 local SeedData = require(SharedModules:WaitForChild("SeedData"))
 local SellValueData = require(SharedModules:WaitForChild("SellValueData"))
 local PetData = require(SharedData:WaitForChild("PetData"))
 local CrateData = require(SharedModules:WaitForChild("CrateData"))
 local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
+local PetSlotPrices = require(SharedData:WaitForChild("PetSlotPrices"))
+local Networking = require(SharedModules:WaitForChild("Networking"))
+local FruitValueCalc = require(SharedModules:WaitForChild("FruitValueCalc"))
 
-getgenv().IdiotHubDebug = getgenv().IdiotHubDebug or true
-getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
+local LocalPlayer = Players.LocalPlayer
+local Backpack = LocalPlayer:WaitForChild("Backpack")
+local userId = LocalPlayer.UserId
+local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
+local Controllers = PlayerScripts:WaitForChild("Controllers")
+
+local PlayerStateClient = require(ClientModules:WaitForChild("PlayerStateClient"))
+
+local GardenSyncSuccess, GardenSyncResult = pcall(function()
+    return require(Controllers:WaitForChild("GardenSyncController"))
+end)
+local GardenSyncCtrl = GardenSyncSuccess and GardenSyncResult or nil
+
+getgenv().IdiotHub = getgenv().IdiotHub or {}
+local G = getgenv().IdiotHub
+G.Debug = G.Debug == nil and true or G.Debug
+G.Log = G.Log or {}
+G.Notifications = G.Notifications or {}
+G.tweenSpeed = G.tweenSpeed or 30
+G.tweening = G.tweening or false
+G.stuffPositions = G.stuffPositions or {
+    ["Seeds"] = CFrame.new(264, 147, -145),
+    ["Sell"] = CFrame.new(270, 147, -127),
+}
 
 local MAX_LOG_LINES = 300
+local MAX_NOTIFICATIONS = 5
+
+local function pushNotification(text)
+    local list = G.Notifications
+    table.insert(list, 1, { text = text, time = os.time() })
+    while #list > MAX_NOTIFICATIONS do
+        table.remove(list)
+    end
+    local ok = pcall(function()
+        Fluent:Notify({ Title = "IdiotHub", Content = text, Duration = 4 })
+    end)
+    if not ok and G.NotifyParagraph then
+        pcall(function()
+            local lines = {}
+            for _, n in ipairs(list) do
+                lines[#lines + 1] = n.text
+            end
+            G.NotifyParagraph:SetDesc(table.concat(lines, "\n"))
+        end)
+    end
+end
 
 local function debugLog(tag, ...)
     local parts = { ... }
@@ -22,10 +73,10 @@ local function debugLog(tag, ...)
         parts[i] = tostring(parts[i])
     end
     local line = string.format("[%s] %s", tag, table.concat(parts, " "))
-    local log = getgenv().IdiotHubLog
+    local log = G.Log
     log[#log + 1] = { text = line, time = os.time(), level = "info" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if G.Debug then
         print("[IdiotHub]", "[" .. tag .. "]", ...)
     end
 end
@@ -36,24 +87,18 @@ local function debugWarn(tag, ...)
         parts[i] = tostring(parts[i])
     end
     local line = string.format("[%s] %s", tag, table.concat(parts, " "))
-    local log = getgenv().IdiotHubLog
+    local log = G.Log
     log[#log + 1] = { text = line, time = os.time(), level = "warn" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if G.Debug then
         warn("[IdiotHub]", "[" .. tag .. "]", ...)
     end
+    pushNotification(line)
 end
 
-local function featureLoop(name, interval, body)
-    task.spawn(function()
-        while true do
-            task.wait(interval)
-            local ok, err = xpcall(body, debug.traceback)
-            if not ok then
-                debugWarn(name, "errored:", err)
-            end
-        end
-    end)
+local function notify(text)
+    debugLog("Notify", text)
+    pushNotification(text)
 end
 
 local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
@@ -148,7 +193,53 @@ local function GetGearNames()
     end)
 end
 
-local function HandleAllSelection(dropdown, values, label)
+local function clampNumberInput(rawValue, default, min, max)
+    local n = tonumber(rawValue)
+    if not n then return default end
+    if min and n < min then return min end
+    if max and n > max then return max end
+    return n
+end
+
+local function isValidWebhookUrl(url)
+    if type(url) ~= "string" or url == "" then return false end
+    return url:match("^https?://discord%.com/api/webhooks/") ~= nil
+        or url:match("^https?://discordapp%.com/api/webhooks/") ~= nil
+end
+
+local Window = Fluent:CreateWindow({
+    Title = "IdiotHub",
+    SubTitle = "discord.gg/idiothub",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(620, 480),
+    Acrylic = true,
+    Theme = "Rose",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "Main", Icon = "home" }),
+    Automation = Window:AddTab({ Title = "Automation", Icon = "sprout" }),
+    Economy = Window:AddTab({ Title = "Economy", Icon = "coins" }),
+    PetsAcquire = Window:AddTab({ Title = "Pets - Acquire", Icon = "paw-print" }),
+    PetsManage = Window:AddTab({ Title = "Pets - Manage", Icon = "list-checks" }),
+    Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+
+local Options = Fluent.Options
+
+local function addFeatureHeader(tab, title, description)
+    tab:AddParagraph({ Title = title, Content = description or "" })
+end
+
+local function addAllDropdown(tab, key, title, values)
+    local dropdown = tab:AddDropdown(key, {
+        Title = title,
+        Values = values,
+        Multi = true,
+        Default = {}
+    })
     dropdown:OnChanged(function()
         local selected = dropdown.Value
         if selected["All"] then
@@ -160,69 +251,64 @@ local function HandleAllSelection(dropdown, values, label)
             end
             dropdown:SetValue(full)
         end
-        debugLog(label or "Dropdown", "selection changed")
     end)
+    return dropdown
 end
 
-local function logToggle(name, label)
-    return function()
-        local state = Fluent.Options[name] and Fluent.Options[name].Value
-        debugLog(label or name, state and "enabled" or "disabled")
+local function addClampedInput(tab, key, title, default, placeholder, min, max)
+    local input = tab:AddInput(key, {
+        Title = title,
+        Default = default,
+        Placeholder = placeholder,
+        Numeric = true,
+        Finished = true
+    })
+    input:OnChanged(function()
+        local clamped = clampNumberInput(Options[key].Value, default, min, max)
+        if tostring(clamped) ~= Options[key].Value then
+            Options[key]:SetValue(tostring(clamped))
+        end
+    end)
+    return input
+end
+
+local function addEnabledToggle(tab, key, label)
+    local toggle = tab:AddToggle(key, { Title = "Enabled", Default = false })
+    toggle:OnChanged(function()
+        notify(label .. (Options[key].Value and " enabled" or " disabled"))
+    end)
+    return toggle
+end
+
+local function selectedSet(dropdownOptions)
+    local value = dropdownOptions.Value
+    if value["All"] then
+        return nil
     end
+    return value
 end
-local Window = Fluent:CreateWindow({
-    Title = "IdiotHub",
-    SubTitle = "discord.gg/idiothub",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
-    Acrylic = true,
-    Theme = "Rose",
-    MinimizeKey = Enum.KeyCode.LeftControl
-})
 
-local Tabs = {
-    Main = Window:AddTab({ Title = "Main", Icon = "home" }),
-    Farming = Window:AddTab({ Title = "Farming", Icon = "sprout" }),
-    Selling = Window:AddTab({ Title = "Selling", Icon = "coins" }),
-    Buying = Window:AddTab({ Title = "Buying", Icon = "shopping-cart" }),
-    Pets = Window:AddTab({ Title = "Pets", Icon = "paw-print" }),
-    Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
-    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
-}
+local function isSelected(set, name)
+    if set == nil or next(set) == nil then return true end
+    return set[name] == true
+end
 
-local Options = Fluent.Options
-Tabs.Main:AddParagraph({
-    Title = "Script Version",
-    Content = "IdiotHub 1.1.0"
-})
-
-Tabs.Main:AddParagraph({
-    Title = "Status",
-    Content = "No modules enabled"
-})
-
-Tabs.Main:AddParagraph({
-    Title = "Credits",
-    Content = "_somerandomidiot\nmalik9ng"
-})
-
-Tabs.Main:AddParagraph({
-    Title = "Statistics",
-    Content = "Crops Harvested: 0\nMoney Earned: 0"
-})
+Tabs.Main:AddParagraph({ Title = "Script Version", Content = "IdiotHub 2.0.0" })
+Tabs.Main:AddParagraph({ Title = "Status", Content = "No modules enabled" })
+Tabs.Main:AddParagraph({ Title = "Credits", Content = "_somerandomidiot\nmalik9ng" })
+Tabs.Main:AddParagraph({ Title = "Statistics", Content = "Crops Harvested: 0\nMoney Earned: 0" })
 
 Tabs.Main:AddButton({
     Title = "Copy Discord Invite",
     Callback = function()
         setclipboard("https://discord.gg/idiothub")
-        debugLog("Main", "Discord invite copied to clipboard")
+        notify("Discord invite copied to clipboard")
     end
 })
 
-Tabs.Main:AddParagraph({
-    Title = "Theme",
-    Content = "Pick a look that's easy on the eyes"
-})
+G.NotifyParagraph = Tabs.Main:AddParagraph({ Title = "Recent Activity", Content = "Nothing yet." })
+
+Tabs.Main:AddParagraph({ Title = "Theme", Content = "Pick a look that's easy on the eyes" })
 
 local THEME_NAMES = {
     "Rose", "Amethyst", "Aqua", "Green", "Orange",
@@ -245,426 +331,180 @@ for _, themeName in ipairs(THEME_NAMES) do
     })
 end
 
-Tabs.Farming:AddParagraph({ Title = "Auto Harvest", Content = "" })
+addFeatureHeader(Tabs.Automation, "Auto Harvest", "Collects fruit that matches your mutation/variant filters once it hits max age, or instantly if mutated and that's enabled below.")
 
 local HarvestMutationValues = GetMutationNames()
-local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
-    Title = "Mutations To Collect",
-    Values = HarvestMutationValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues, "HarvestMutations")
+local HarvestMutationsDropdown = addAllDropdown(Tabs.Automation, "HarvestMutations", "Mutations To Collect", HarvestMutationValues)
 
 local HarvestVariantValues = withAll({ "Giant", "Normal", "Shiny" })
-local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
-    Title = "Variants To Collect",
-    Values = HarvestVariantValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
+local HarvestVariantsDropdown = addAllDropdown(Tabs.Automation, "HarvestVariants", "Variants To Collect", HarvestVariantValues)
 
-Tabs.Farming:AddToggle("HarvestInstantMutated", {
-    Title = "Enabled",
-    Default = false
-})
-Options.HarvestInstantMutated:OnChanged(logToggle("HarvestInstantMutated", "Collect Mutated Fruit On Sight"))
+addEnabledToggle(Tabs.Automation, "HarvestInstantMutated", "Collect Mutated Fruit On Sight (skips the max-age wait)")
+addEnabledToggle(Tabs.Automation, "HarvestEnabled", "Auto Harvest")
 
-Tabs.Farming:AddToggle("HarvestEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.HarvestEnabled:OnChanged(logToggle("HarvestEnabled", "Auto Harvest"))
-
-Tabs.Farming:AddParagraph({ Title = "Auto Plant", Content = "" })
+addFeatureHeader(Tabs.Automation, "Auto Plant", "Plants selected seeds from your inventory into open plot spots, prioritizing denser areas first.")
 
 local PlantSeedValues = GetSeedNames()
-local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
-    Title = "Seeds To Plant",
-    Values = PlantSeedValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(PlantSeedsDropdown, PlantSeedValues, "PlantSeeds")
+local PlantSeedsDropdown = addAllDropdown(Tabs.Automation, "PlantSeeds", "Seeds To Plant", PlantSeedValues)
 
-Tabs.Farming:AddToggle("PlantEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.PlantEnabled:OnChanged(logToggle("PlantEnabled", "Auto Plant"))
+addEnabledToggle(Tabs.Automation, "PlantEnabled", "Auto Plant")
 
-Tabs.Farming:AddParagraph({ Title = "Auto Sprinkler", Content = "" })
+addFeatureHeader(Tabs.Automation, "Auto Sprinkler", "Places selected sprinklers in plant-dense spots not already covered by an existing sprinkler of that type.")
 
 local SprinklersToUseValues = withAll({ "Advanced Sprinkler", "Basic Sprinkler", "Godly Sprinkler" })
-local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
-    Title = "Sprinklers To Use",
-    Values = SprinklersToUseValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues, "SprinklersToUse")
+local SprinklersToUseDropdown = addAllDropdown(Tabs.Automation, "SprinklersToUse", "Sprinklers To Use", SprinklersToUseValues)
 
-Tabs.Farming:AddToggle("SprinklerEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled", "Auto Sprinkler"))
-Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
+addEnabledToggle(Tabs.Automation, "SprinklerEnabled", "Auto Sprinkler")
 
-Tabs.Selling:AddDropdown("SellMode", {
+addFeatureHeader(Tabs.Economy, "Auto Sell", "Keep Favorites sells everything except favorited fruit. Sell All sells your whole inventory via one remote call. Sell Selected only sells the fruit types you pick below.")
+
+Tabs.Economy:AddDropdown("SellMode", {
     Title = "Sell Mode",
     Values = { "Keep Favorites", "Sell All", "Sell Selected" },
     Multi = false,
     Default = 1
 })
 Options.SellMode:OnChanged(function()
-    debugLog("Sell Mode", "changed to", Options.SellMode.Value)
+    notify("Sell mode changed to " .. Options.SellMode.Value)
 end)
 
 local SellFruitValues = GetFruitNames()
-local SellFruitsDropdown = Tabs.Selling:AddDropdown("SellFruits", {
-    Title = "Fruits To Sell",
-    Values = SellFruitValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(SellFruitsDropdown, SellFruitValues, "SellFruits")
+local SellFruitsDropdown = addAllDropdown(Tabs.Economy, "SellFruits", "Fruits To Sell (used in Sell Selected mode)", SellFruitValues)
 
-Tabs.Selling:AddInput("SellDelay", {
-    Title = "Sell Delay (Seconds)",
-    Default = "1",
-    Placeholder = "Seconds",
-    Numeric = true,
-    Finished = true
-})
+addClampedInput(Tabs.Economy, "SellDelay", "Sell Delay (Seconds)", "1", "e.g. 1-30", 0.5, 60)
+addEnabledToggle(Tabs.Economy, "SellEnabled", "Auto Sell")
 
-Tabs.Selling:AddToggle("SellEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.SellEnabled:OnChanged(logToggle("SellEnabled", "Auto Sell"))
+addFeatureHeader(Tabs.Economy, "Auto Favorite", "Favorites fruit matching any checked condition below: a target mutation, a non-Normal variant, or a sell price at/above your minimum.")
 
-Tabs.Selling:AddParagraph({ Title = "Auto Favorite", Content = "" })
-
-Tabs.Selling:AddDropdown("FavoriteChecks", {
-    Title = "Favorite Conditions",
+Tabs.Economy:AddDropdown("FavoriteChecks", {
+    Title = "Favorite Conditions (any match favorites the fruit)",
     Values = { "Mutation", "Sell Price", "Variant" },
     Multi = true,
     Default = {}
 })
 Options.FavoriteChecks:OnChanged(function()
-    debugLog("Favorite Conditions", "selection changed")
+    notify("Favorite conditions changed")
 end)
 
 local FavoriteMutationValues = GetMutationNames()
-local FavoriteMutationsDropdown = Tabs.Selling:AddDropdown("FavoriteMutations", {
-    Title = "Favorite Mutations",
-    Values = FavoriteMutationValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(FavoriteMutationsDropdown, FavoriteMutationValues, "FavoriteMutations")
+local FavoriteMutationsDropdown = addAllDropdown(Tabs.Economy, "FavoriteMutations", "Favorite Mutations (used by Mutation condition)", FavoriteMutationValues)
 
-Tabs.Selling:AddInput("FavoriteMinPrice", {
-    Title = "Minimum Sell Price",
-    Default = "0",
-    Placeholder = "Price",
-    Numeric = true,
-    Finished = true
-})
+addClampedInput(Tabs.Economy, "FavoriteMinPrice", "Minimum Sell Price (used by Sell Price condition)", "0", "e.g. 1000", 0, nil)
+addEnabledToggle(Tabs.Economy, "FavoriteEnabled", "Auto Favorite")
 
-Tabs.Selling:AddToggle("FavoriteEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.FavoriteEnabled:OnChanged(logToggle("FavoriteEnabled", "Auto Favorite"))
-
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Seeds", Content = "" })
-
+addFeatureHeader(Tabs.Economy, "Auto Buy Seeds", "Buys selected seeds from the shop while in stock and affordable.")
 local BuySeedValues = GetSeedNames()
-local SeedsToBuyDropdown = Tabs.Buying:AddDropdown("SeedsToBuy", {
-    Title = "Seeds To Buy",
-    Values = BuySeedValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(SeedsToBuyDropdown, BuySeedValues, "SeedsToBuy")
+local SeedsToBuyDropdown = addAllDropdown(Tabs.Economy, "SeedsToBuy", "Seeds To Buy", BuySeedValues)
+addClampedInput(Tabs.Economy, "AmountPerSeed", "Amount Per Seed (per restock)", "1", "e.g. 1-50", 1, 999)
+addEnabledToggle(Tabs.Economy, "BuySeedsEnabled", "Auto Buy Seeds")
 
-Tabs.Buying:AddInput("AmountPerSeed", {
-    Title = "Amount Per Seed",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Buying:AddToggle("BuySeedsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.BuySeedsEnabled:OnChanged(logToggle("BuySeedsEnabled", "Auto Buy Seeds"))
-
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Gears", Content = "" })
-
+addFeatureHeader(Tabs.Economy, "Auto Buy Gears", "Buys selected gear from the shop while in stock and affordable.")
 local BuyGearValues = GetGearNames()
-local GearsToBuyDropdown = Tabs.Buying:AddDropdown("GearsToBuy", {
-    Title = "Gears To Buy",
-    Values = BuyGearValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(GearsToBuyDropdown, BuyGearValues, "GearsToBuy")
+local GearsToBuyDropdown = addAllDropdown(Tabs.Economy, "GearsToBuy", "Gears To Buy", BuyGearValues)
+addClampedInput(Tabs.Economy, "AmountPerGear", "Amount Per Gear (per restock)", "1", "e.g. 1-50", 1, 999)
+addEnabledToggle(Tabs.Economy, "BuyGearsEnabled", "Auto Buy Gears")
 
-Tabs.Buying:AddInput("AmountPerGear", {
-    Title = "Amount Per Gear",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Buying:AddToggle("BuyGearsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.BuyGearsEnabled:OnChanged(logToggle("BuyGearsEnabled", "Auto Buy Gears"))
-
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Crates", Content = "" })
-
+addFeatureHeader(Tabs.Economy, "Auto Buy Crates", "Buys selected crates from the shop while in stock and affordable.")
 local BuyCrateValues = GetCrateNames()
-local CratesToBuyDropdown = Tabs.Buying:AddDropdown("CratesToBuy", {
-    Title = "Crates To Buy",
-    Values = BuyCrateValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(CratesToBuyDropdown, BuyCrateValues, "CratesToBuy")
+local CratesToBuyDropdown = addAllDropdown(Tabs.Economy, "CratesToBuy", "Crates To Buy", BuyCrateValues)
+addClampedInput(Tabs.Economy, "AmountPerCrate", "Amount Per Crate (per restock)", "1", "e.g. 1-50", 1, 999)
+addEnabledToggle(Tabs.Economy, "BuyCratesEnabled", "Auto Buy Crates")
 
-Tabs.Buying:AddInput("AmountPerCrate", {
-    Title = "Amount Per Crate",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
+addFeatureHeader(Tabs.Economy, "Auto Buy Pet Slots", "Buys pet slots up to your max, stopping early if you can't afford the next one.")
+addClampedInput(Tabs.Economy, "MaxSlots", "Maximum Slots To Buy Up To", "10", "game cap may be lower", 1, 200)
+addEnabledToggle(Tabs.Economy, "BuySlotsEnabled", "Auto Buy Pet Slots")
 
-Tabs.Buying:AddToggle("BuyCratesEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.BuyCratesEnabled:OnChanged(logToggle("BuyCratesEnabled", "Auto Buy Crates"))
-
-Tabs.Buying:AddParagraph({ Title = "Auto Buy Pet Slots", Content = "" })
-
-Tabs.Buying:AddInput("MaxSlots", {
-    Title = "Maximum Slots",
-    Default = "10",
-    Placeholder = "Max",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Buying:AddToggle("BuySlotsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled", "Auto Buy Pet Slots"))
-Tabs.Pets:AddParagraph({ Title = "Auto Buy Pets", Content = "" })
+addFeatureHeader(Tabs.PetsAcquire, "Auto Buy Wild Pets", "Snipes and tames wild pets matching your target rarities or names. Webhook fires after a confirmed catch.")
 
 local TargetRarityValues = GetPetRarities()
-local TargetRaritiesDropdown = Tabs.Pets:AddDropdown("TargetRarities", {
-    Title = "Target Rarities",
-    Values = TargetRarityValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(TargetRaritiesDropdown, TargetRarityValues, "TargetRarities")
+local TargetRaritiesDropdown = addAllDropdown(Tabs.PetsAcquire, "TargetRarities", "Target Rarities", TargetRarityValues)
 
 local TargetPetValues = GetPetNames()
-local TargetPetsDropdown = Tabs.Pets:AddDropdown("TargetPets", {
-    Title = "Target Pets",
-    Values = TargetPetValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(TargetPetsDropdown, TargetPetValues, "TargetPets")
+local TargetPetsDropdown = addAllDropdown(Tabs.PetsAcquire, "TargetPets", "Target Pets", TargetPetValues)
 
-Tabs.Pets:AddInput("MinLuckSent", {
-    Title = "Minimum Luck Sent",
-    Default = "0",
-    Placeholder = "Luck",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Pets:AddInput("PetsWebhookURL", {
+addClampedInput(Tabs.PetsAcquire, "MinLuckSent", "Minimum Luck To Webhook (1-in-X spawn rarity, higher = rarer)", "0", "e.g. 1000", 0, nil)
+Tabs.PetsAcquire:AddInput("PetsWebhookURL", {
     Title = "Webhook URL",
     Default = "",
-    Placeholder = "Paste URL",
+    Placeholder = "Discord webhook URL",
     Numeric = false,
     Finished = true
 })
-
-Tabs.Pets:AddInput("PetsNote", {
-    Title = "Note",
+Tabs.PetsAcquire:AddInput("PetsNote", {
+    Title = "Note (included in webhook embed)",
     Default = "",
     Placeholder = "Optional note",
     Numeric = false,
     Finished = true
 })
 
-Tabs.Pets:AddToggle("BuyPetsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.BuyPetsEnabled:OnChanged(logToggle("BuyPetsEnabled", "Auto Buy Pets"))
+addEnabledToggle(Tabs.PetsAcquire, "BuyPetsEnabled", "Auto Buy Wild Pets")
 
-Tabs.Pets:AddParagraph({ Title = "Auto Equip Pets", Content = "" })
+addFeatureHeader(Tabs.PetsManage, "Auto Equip Pets", "Keeps your equipped loadout filled up to your slot cap. Priority pets are equipped first, blacklisted pets are never equipped.")
 
 local PriorityPetValues = GetPetNames()
-local PriorityPetsDropdown = Tabs.Pets:AddDropdown("PriorityPets", {
-    Title = "Priority Pets",
-    Values = PriorityPetValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(PriorityPetsDropdown, PriorityPetValues, "PriorityPets")
+local PriorityPetsDropdown = addAllDropdown(Tabs.PetsManage, "PriorityPets", "Priority Pets (equipped first)", PriorityPetValues)
 
 local BlacklistedPetValues = GetPetNames()
-local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
-    Title = "Blacklisted Pets",
-    Values = BlacklistedPetValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues, "BlacklistedPets")
+local BlacklistedPetsDropdown = addAllDropdown(Tabs.PetsManage, "BlacklistedPets", "Blacklisted Pets (never equipped)", BlacklistedPetValues)
 
-Tabs.Pets:AddToggle("EquipPetsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled", "Auto Equip Pets"))
+addEnabledToggle(Tabs.PetsManage, "EquipPetsEnabled", "Auto Equip Pets")
 
-Tabs.Opening:AddParagraph({ Title = "Auto Open Eggs", Content = "" })
-
+addFeatureHeader(Tabs.Opening, "Auto Open Eggs", "Opens selected egg types from your inventory, one purchase-confirmed open at a time.")
 local EggsToOpenValues = withAll({ "Common Egg", "Legendary Egg", "Rare Egg" })
-local EggsToOpenDropdown = Tabs.Opening:AddDropdown("EggsToOpen", {
-    Title = "Eggs To Open",
-    Values = EggsToOpenValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(EggsToOpenDropdown, EggsToOpenValues, "EggsToOpen")
+local EggsToOpenDropdown = addAllDropdown(Tabs.Opening, "EggsToOpen", "Eggs To Open", EggsToOpenValues)
+addClampedInput(Tabs.Opening, "OpenEggsAmount", "Amount Per Cycle", "1", "e.g. 1-20", 1, 999)
+addEnabledToggle(Tabs.Opening, "OpenEggsEnabled", "Auto Open Eggs")
 
-Tabs.Opening:AddInput("OpenEggsAmount", {
-    Title = "Amount",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Opening:AddToggle("OpenEggsEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled", "Auto Open Eggs"))
-
-Tabs.Opening:AddParagraph({ Title = "Auto Open Seed Packs", Content = "" })
-
+addFeatureHeader(Tabs.Opening, "Auto Open Seed Packs", "Opens selected seed pack types from your inventory.")
 local PacksToOpenValues = withAll({ "Basic Pack", "Premium Pack" })
-local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
-    Title = "Packs To Open",
-    Values = PacksToOpenValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(PacksToOpenDropdown, PacksToOpenValues, "PacksToOpen")
+local PacksToOpenDropdown = addAllDropdown(Tabs.Opening, "PacksToOpen", "Packs To Open", PacksToOpenValues)
+addClampedInput(Tabs.Opening, "OpenPacksAmount", "Amount Per Cycle", "1", "e.g. 1-20", 1, 999)
+addEnabledToggle(Tabs.Opening, "OpenPacksEnabled", "Auto Open Seed Packs")
 
-Tabs.Opening:AddInput("OpenPacksAmount", {
-    Title = "Amount",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
-
-Tabs.Opening:AddToggle("OpenPacksEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.OpenPacksEnabled:OnChanged(logToggle("OpenPacksEnabled", "Auto Open Seed Packs"))
-
-Tabs.Opening:AddParagraph({ Title = "Auto Open Crates", Content = "" })
-
+addFeatureHeader(Tabs.Opening, "Auto Open Crates", "Opens selected crate types from your inventory.")
 local OpenCrateValues = GetCrateNames()
-local CratesToOpenDropdown = Tabs.Opening:AddDropdown("CratesToOpen", {
-    Title = "Crates To Open",
-    Values = OpenCrateValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(CratesToOpenDropdown, OpenCrateValues, "CratesToOpen")
+local CratesToOpenDropdown = addAllDropdown(Tabs.Opening, "CratesToOpen", "Crates To Open", OpenCrateValues)
+addClampedInput(Tabs.Opening, "OpenCratesAmount", "Amount Per Cycle", "1", "e.g. 1-20", 1, 999)
+addEnabledToggle(Tabs.Opening, "OpenCratesEnabled", "Auto Open Crates")
 
-Tabs.Opening:AddInput("OpenCratesAmount", {
-    Title = "Amount",
-    Default = "1",
-    Placeholder = "Amount",
-    Numeric = true,
-    Finished = true
-})
+addFeatureHeader(Tabs.Settings, "Configuration", "Your settings autosave on change. Load Config restores your last saved session.")
 
-Tabs.Opening:AddToggle("OpenCratesEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Crates"))
-Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
+local SaveManager = Fluent.SaveManager
+local InterfaceManager = Fluent.InterfaceManager
+local saveManagerOk = false
 
-Tabs.Settings:AddToggle("OptimisationEnabled", {
-    Title = "Enabled",
-    Default = false
-})
-Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled", "Performance Optimisation"))
+if SaveManager then
+    saveManagerOk = pcall(function()
+        SaveManager:SetLibrary(Fluent)
+        SaveManager:SetFolder("IdiotHub/configs")
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetIgnoreIndexes({})
+        SaveManager:BuildConfigSection(Tabs.Settings)
+        SaveManager:LoadAutoloadConfig()
+    end)
+end
 
-Tabs.Settings:AddToggle("DebugConsoleEnabled", {
-    Title = "Enabled",
-    Default = true
-})
-Options.DebugConsoleEnabled:OnChanged(function()
-    getgenv().IdiotHubDebug = Options.DebugConsoleEnabled.Value
-    debugLog("Debug Console", Options.DebugConsoleEnabled.Value and "enabled" or "disabled")
-end)
+if not saveManagerOk then
+    debugWarn("Config", "SaveManager unavailable on this Fluent build, config UI disabled")
+    Tabs.Settings:AddParagraph({
+        Title = "Config Unavailable",
+        Content = "This Fluent build doesn't expose SaveManager. Settings won't persist between sessions."
+    })
+end
 
-Tabs.Settings:AddButton({
-    Title = "Create Config",
-    Callback = function()
-        debugLog("Config", "Create Config pressed")
-    end
-})
+addFeatureHeader(Tabs.Settings, "Interface", "")
 
-Tabs.Settings:AddButton({
-    Title = "Save Config",
-    Callback = function()
-        debugLog("Config", "Save Config pressed")
-    end
-})
+if InterfaceManager then
+    pcall(function()
+        InterfaceManager:SetLibrary(Fluent)
+        InterfaceManager:SetFolder("IdiotHub")
+        InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+    end)
+end
 
-Tabs.Settings:AddButton({
-    Title = "Override Config",
-    Callback = function()
-        debugLog("Config", "Override Config pressed")
-    end
-})
-
-Tabs.Settings:AddParagraph({ Title = "Interface", Content = "" })
-
-Tabs.Settings:AddToggle("AcrylicEnabled", {
-    Title = "Enabled",
-    Default = true
-})
-Options.AcrylicEnabled:OnChanged(logToggle("AcrylicEnabled", "Acrylic Background"))
+local acrylicToggle = addEnabledToggle(Tabs.Settings, "AcrylicEnabled", "Acrylic Background")
+Options.AcrylicEnabled:SetValue(true)
 
 Tabs.Settings:AddKeybind("MinimizeBind", {
     Title = "Minimize Keybind",
@@ -672,12 +512,20 @@ Tabs.Settings:AddKeybind("MinimizeBind", {
     Default = "LeftControl"
 })
 
-Tabs.Settings:AddParagraph({ Title = "Webhooks", Content = "" })
+addEnabledToggle(Tabs.Settings, "OptimisationEnabled", "Performance Optimisation (lowers render quality, disables shadows and fog to reduce lag)")
+
+Tabs.Settings:AddToggle("DebugConsoleEnabled", { Title = "Enabled", Default = true })
+Options.DebugConsoleEnabled:OnChanged(function()
+    G.Debug = Options.DebugConsoleEnabled.Value
+    notify("Debug console " .. (G.Debug and "enabled" or "disabled"))
+end)
+
+addFeatureHeader(Tabs.Settings, "Webhooks", "Used for the Auto Buy Wild Pets notification embed on the Pets - Acquire tab.")
 
 Tabs.Settings:AddInput("SettingsWebhookURL", {
     Title = "Webhook URL",
     Default = "",
-    Placeholder = "Paste URL",
+    Placeholder = "Discord webhook URL",
     Numeric = false,
     Finished = true
 })
@@ -686,8 +534,8 @@ Tabs.Settings:AddButton({
     Title = "Test Webhook",
     Callback = function()
         local url = Options.SettingsWebhookURL.Value
-        if not url or url == "" then
-            debugWarn("Webhook", "Test Webhook pressed with no URL set")
+        if not isValidWebhookUrl(url) then
+            notify("Test Webhook failed: not a valid Discord webhook URL")
             return
         end
 
@@ -703,48 +551,18 @@ Tabs.Settings:AddButton({
         end)
 
         if ok and response and response.StatusCode and response.StatusCode < 300 then
-            debugLog("Webhook", "Test Webhook sent successfully, status", response.StatusCode)
+            notify("Test Webhook sent successfully (status " .. tostring(response.StatusCode) .. ")")
         elseif ok and response then
-            debugWarn("Webhook", "Test Webhook failed, status", response.StatusCode)
+            notify("Test Webhook failed (status " .. tostring(response.StatusCode) .. ")")
         else
-            debugWarn("Webhook", "Test Webhook failed", tostring(response))
+            notify("Test Webhook failed: " .. tostring(response))
         end
     end
 })
-local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
-local TweenService = game:GetService("TweenService")
-local HttpService = game:GetService("HttpService")
 
-local LocalPlayer = Players.LocalPlayer
-local Backpack = LocalPlayer:WaitForChild("Backpack")
-local userId = LocalPlayer.UserId
-
-local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
-local Controllers = PlayerScripts:WaitForChild("Controllers")
-local ClientModules = ReplicatedStorage:WaitForChild("ClientModules")
-
-local PetSlotPrices = require(SharedData:WaitForChild("PetSlotPrices"))
-local Networking = require(SharedModules:WaitForChild("Networking"))
-local PlayerStateClient = require(ClientModules:WaitForChild("PlayerStateClient"))
-local FruitValueCalc = require(SharedModules:WaitForChild("FruitValueCalc"))
-
-local GardenSyncSuccess, GardenSyncResult = pcall(function()
-    return require(Controllers:WaitForChild("GardenSyncController"))
-end)
-local GardenSyncCtrl = GardenSyncSuccess and GardenSyncResult or nil
-if not GardenSyncSuccess then
-    debugWarn("GardenSync", "Failed to load:", GardenSyncResult)
+if saveManagerOk then
+    SaveManager:SetAutosaveEnabled(true)
 end
-
-local StockValues = ReplicatedStorage:WaitForChild("StockValues")
-local SeedShopItems = StockValues:WaitForChild("SeedShop"):WaitForChild("Items")
-local GearShopItems = StockValues:WaitForChild("GearShop"):WaitForChild("Items")
-local CrateShopItems = StockValues:WaitForChild("CrateShop"):WaitForChild("Items")
-
-local MapFolder = workspace:WaitForChild("Map")
-local wildPetRef = MapFolder:WaitForChild("WildPetRef")
-local wildPetSpawns = MapFolder:WaitForChild("WildPetSpawns")
 
 local function resolveRemote(path)
     local node = Networking
@@ -781,6 +599,16 @@ for name, remote in pairs(Remotes) do
     if not remote then
         debugWarn("Remotes", name, "failed to resolve")
     end
+end
+
+local function safeFire(remote, ...)
+    if not remote then return false end
+    local ok, err = pcall(function(...) remote:Fire(...) end, ...)
+    if not ok then
+        debugWarn("Remote", "fire failed:", err)
+        return false
+    end
+    return true
 end
 
 local replica = nil
@@ -838,6 +666,10 @@ local function getStockValue(itemsFolder, itemName)
 end
 
 local function equipAndActivateTool(tool)
+    if not getconnections then
+        debugWarn("Equip", "getconnections unavailable on this executor")
+        return
+    end
     for _, conn in ipairs(getconnections(tool.Activated)) do conn:Fire() end
 end
 
@@ -858,24 +690,14 @@ local function playerAlive()
     return humanoid ~= nil and humanoid.Health > 0
 end
 
-local function selectedSet(dropdownOptions)
-    local value = dropdownOptions.Value
-    if value["All"] then
-        return nil
-    end
-    return value
-end
+local StockValues = ReplicatedStorage:WaitForChild("StockValues")
+local SeedShopItems = StockValues:WaitForChild("SeedShop"):WaitForChild("Items")
+local GearShopItems = StockValues:WaitForChild("GearShop"):WaitForChild("Items")
+local CrateShopItems = StockValues:WaitForChild("CrateShop"):WaitForChild("Items")
 
-local function isSelected(set, name)
-    if set == nil or next(set) == nil then return true end
-    return set[name] == true
-end
-getgenv().tweenSpeed = getgenv().tweenSpeed or 30
-getgenv().tweening = getgenv().tweening or false
-getgenv().stuffPositions = getgenv().stuffPositions or {
-    ["Seeds"] = CFrame.new(264, 147, -145),
-    ["Sell"] = CFrame.new(270, 147, -127),
-}
+local MapFolder = workspace:WaitForChild("Map")
+local wildPetRef = MapFolder:WaitForChild("WildPetRef")
+local wildPetSpawns = MapFolder:WaitForChild("WildPetSpawns")
 
 local TELEPORT_THRESHOLD_SQ = 16
 
@@ -897,10 +719,10 @@ local function computePlotCenter()
     return prim and prim.Position
 end
 
-if not getgenv().stuffPositions["Garden"] then
+if not G.stuffPositions["Garden"] then
     local pos = computePlotCenter()
     if pos then
-        getgenv().stuffPositions["Garden"] = CFrame.new(pos)
+        G.stuffPositions["Garden"] = CFrame.new(pos)
     end
 end
 
@@ -930,12 +752,12 @@ end
 
 local function tweenTo(hrp, targetPos)
     local remainingDistance = (hrp.Position - targetPos).Magnitude
-    local TWEEN_SPEED = getgenv().tweenSpeed
+    local TWEEN_SPEED = G.tweenSpeed
     if remainingDistance <= TWEEN_SPEED then
         hrp.CFrame = CFrame.new(targetPos)
         return
     end
-    getgenv().tweening = true
+    G.tweening = true
     local tween = TweenService:Create(
         hrp,
         TweenInfo.new(remainingDistance / TWEEN_SPEED, Enum.EasingStyle.Linear),
@@ -943,7 +765,7 @@ local function tweenTo(hrp, targetPos)
     )
     tween:Play()
     tween.Completed:Wait()
-    getgenv().tweening = false
+    G.tweening = false
 end
 
 local canTeleportDirect = false
@@ -951,7 +773,7 @@ local function teleport(target, teleportDirect)
     if teleportDirect == nil then
         teleportDirect = canTeleportDirect
     end
-    if getgenv().tweening then return false end
+    if G.tweening then return false end
 
     local character = LocalPlayer.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
@@ -959,10 +781,10 @@ local function teleport(target, teleportDirect)
 
     if not teleportDirect then
         if typeof(target) == "string" then
-            local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
+            local cf = G.stuffPositions and G.stuffPositions[target]
             if not cf then return false end
             if xzDistanceSq(hrp.Position, cf.Position) > TELEPORT_THRESHOLD_SQ then
-                Remotes.TeleportRequest:Fire(target)
+                safeFire(Remotes.TeleportRequest, target)
             end
             return true
         end
@@ -994,7 +816,7 @@ local function teleport(target, teleportDirect)
             end
 
             if bestTeleport then
-                Remotes.TeleportRequest:Fire(bestTeleport)
+                safeFire(Remotes.TeleportRequest, bestTeleport)
                 repeat
                     character = LocalPlayer.Character
                     hrp = character and character:FindFirstChild("HumanoidRootPart")
@@ -1009,7 +831,7 @@ local function teleport(target, teleportDirect)
 
     local targetPos
     if typeof(target) == "string" then
-        local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
+        local cf = G.stuffPositions and G.stuffPositions[target]
         if not cf then return false end
         targetPos = cf.Position
     elseif typeof(target) == "CFrame" then
@@ -1019,7 +841,7 @@ local function teleport(target, teleportDirect)
     end
 
     local safezonePart = MapFolder:WaitForChild("SafeZones"):WaitForChild("Part")
-    local gardenCF = getgenv().stuffPositions and getgenv().stuffPositions["Garden"]
+    local gardenCF = G.stuffPositions and G.stuffPositions["Garden"]
 
     local safezoneEdge = getBottomRectClosestPoint(safezonePart, targetPos)
     local safezoneDistance = (safezoneEdge - targetPos).Magnitude
@@ -1027,7 +849,7 @@ local function teleport(target, teleportDirect)
     local currentDistance = (hrp.Position - targetPos).Magnitude
 
     if safezoneDistance <= gardenDistance and safezoneDistance <= currentDistance then
-        Remotes.TeleportRequest:Fire("Seeds")
+        safeFire(Remotes.TeleportRequest, "Seeds")
         task.wait(0.2)
         character = LocalPlayer.Character
         hrp = character and character:FindFirstChild("HumanoidRootPart")
@@ -1042,7 +864,7 @@ local function teleport(target, teleportDirect)
     end
 
     if gardenDistance <= currentDistance then
-        Remotes.TeleportRequest:Fire("Garden")
+        safeFire(Remotes.TeleportRequest, "Garden")
         task.wait(0.2)
         character = LocalPlayer.Character
         hrp = character and character:FindFirstChild("HumanoidRootPart")
@@ -1061,6 +883,7 @@ local function teleport(target, teleportDirect)
     end
     return true
 end
+
 local function matchesList(set, value)
     return isSelected(set, value or "Normal")
 end
@@ -1216,6 +1039,7 @@ local _plantWorldPositions = {}
 
 local GARDEN_TTL = 2
 local _gardenDirty = true
+local _lastGardenSignature = nil
 local _lastGardenPoll = 0
 local _plantCounts = {}
 local _harvestTargets = {}
@@ -1229,10 +1053,33 @@ local function _plantWorldPos(p)
     return v
 end
 
+local function _gardenSignature(garden)
+    local count = 0
+    local ageSum = 0
+    for _, p in pairs(garden) do
+        count += 1
+        ageSum += p.Age or 0
+        if p.Fruits then
+            for _, f in pairs(p.Fruits) do
+                count += 1
+                ageSum += f.Age or 0
+            end
+        end
+    end
+    return count .. ":" .. math.floor(ageSum)
+end
+
 local function _rebuildGardenCache()
     if not GardenSyncCtrl then return end
     local garden = GardenSyncCtrl:GetGarden(userId)
     if not garden then return end
+
+    local signature = _gardenSignature(garden)
+    if signature == _lastGardenSignature then
+        _gardenDirty = false
+        return
+    end
+    _lastGardenSignature = signature
 
     _plantCounts = {}
     _harvestTargets = {}
@@ -1421,134 +1268,142 @@ local function _trySetup(plotId)
     return _plotCenter ~= nil
 end
 
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
-            if getFruitCount(true) < 100 then
-                tickGarden()
-                if #_harvestTargets > 0 and Remotes.CollectFruit then
-                    teleport("Garden")
-                    local fire = Remotes.CollectFruit.Fire
-                    local fruitCount = getFruitCount(true)
-                    local collected = 0
-                    for i = 1, #_harvestTargets do
-                        local t = _harvestTargets[i]
-                        fire(Remotes.CollectFruit, t.plantId, t.fruitId)
+local function featureLoop(name, interval, body)
+    task.spawn(function()
+        while true do
+            task.wait(interval)
+            local ok, err = xpcall(body, debug.traceback)
+            if not ok then
+                debugWarn(name, "errored:", err)
+            end
+        end
+    end)
+end
+
+featureLoop("HarvestLoop", 0.5, function()
+    if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
+        if getFruitCount(true) < 100 then
+            tickGarden()
+            if #_harvestTargets > 0 and Remotes.CollectFruit then
+                teleport("Garden")
+                local fruitCount = getFruitCount(true)
+                local collected = 0
+                for i = 1, #_harvestTargets do
+                    local t = _harvestTargets[i]
+                    if safeFire(Remotes.CollectFruit, t.plantId, t.fruitId) then
                         fruitCount += 1
                         collected += 1
-                        if fruitCount >= 90 then break end
                     end
-                    if collected > 0 then
-                        markGardenDirty()
-                        debugLog("Auto Harvest", "Collected", collected, "fruit")
-                    end
+                    if fruitCount >= 90 then break end
+                end
+                if collected > 0 then
+                    markGardenDirty()
+                    debugLog("Auto Harvest", "Collected", collected, "fruit")
                 end
             end
         end
     end
 end)
-task.spawn(function()
+
+featureLoop("PlantLoop", 2, function()
     local PLANT_SETTLE = 0.1
-    while true do
-        task.wait(2)
-        if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
-            local plotId = LocalPlayer:GetAttribute("PlotId")
-            if plotId and _trySetup(plotId) then
-                tickGarden()
+    if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
+        local plotId = LocalPlayer:GetAttribute("PlotId")
+        if plotId and _trySetup(plotId) then
+            tickGarden()
 
-                local seedSet = selectedSet(Options.PlantSeeds)
+            local seedSet = selectedSet(Options.PlantSeeds)
 
-                local seedTools = {}
-                for name, toolList in pairs(_seedInventory) do
-                    if isSelected(seedSet, name) then
-                        for _, tool in ipairs(toolList) do
-                            local stack = tool:GetAttribute("Count") or 1
-                            if stack > 0 then
-                                seedTools[#seedTools + 1] = { tool = tool, amount = stack }
-                            end
+            local seedTools = {}
+            for name, toolList in pairs(_seedInventory) do
+                if isSelected(seedSet, name) then
+                    for _, tool in ipairs(toolList) do
+                        local stack = tool:GetAttribute("Count") or 1
+                        if stack > 0 then
+                            seedTools[#seedTools + 1] = { tool = tool, amount = stack }
                         end
                     end
                 end
+            end
 
-                if #_candidates > 0 and #seedTools > 0 then
-                    local char = LocalPlayer.Character
-                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-                    if humanoid then
-                        local sorted = getSortedCandidates()
-                        local sortIdx = 1
+            if #_candidates > 0 and #seedTools > 0 then
+                local char = LocalPlayer.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                if humanoid then
+                    local sorted = getSortedCandidates()
+                    local sortIdx = 1
 
-                        local function nextSpot()
-                            while sortIdx <= #sorted do
-                                local pos = _candidates[sorted[sortIdx].idx]
-                                sortIdx += 1
-                                if _inPerimeter(pos) and not isOccupied(pos) then
-                                    return pos
-                                end
+                    local function nextSpot()
+                        while sortIdx <= #sorted do
+                            local pos = _candidates[sorted[sortIdx].idx]
+                            sortIdx += 1
+                            if _inPerimeter(pos) and not isOccupied(pos) then
+                                return pos
                             end
-                            return nil
                         end
+                        return nil
+                    end
 
-                        local function ensureEquipped(tool)
-                            if not tool or not tool.Parent then return false end
-                            local held = char:FindFirstChildWhichIsA("Tool")
+                    local function ensureEquipped(tool)
+                        if not tool or not tool.Parent then return false end
+                        local held = char:FindFirstChildWhichIsA("Tool")
+                        if held == tool then return true end
+                        humanoid:EquipTool(tool)
+                        local deadline = os.clock() + 0.3
+                        repeat
+                            task.wait()
+                            if not tool.Parent then return false end
+                            held = char:FindFirstChildWhichIsA("Tool")
                             if held == tool then return true end
-                            humanoid:EquipTool(tool)
-                            local deadline = os.clock() + 0.3
-                            repeat
-                                task.wait()
-                                if not tool.Parent then return false end
-                                held = char:FindFirstChildWhichIsA("Tool")
-                                if held == tool then return true end
-                            until os.clock() > deadline
-                            return false
-                        end
+                        until os.clock() > deadline
+                        return false
+                    end
 
-                        local placed = 0
-                        local outOfSpots = false
-                        for _, entry in ipairs(seedTools) do
-                            if outOfSpots then break end
-                            local seedTool = entry.tool
-                            local count = entry.amount
-                            while count > 0 and seedTool.Parent do
-                                local spot = nextSpot()
-                                if not spot then
-                                    outOfSpots = true
-                                    break
-                                end
-                                if not ensureEquipped(seedTool) then break end
-                                local seedName = seedTool:GetAttribute("SeedTool")
-                                if not seedName then break end
+                    local placed = 0
+                    local outOfSpots = false
+                    for _, entry in ipairs(seedTools) do
+                        if outOfSpots then break end
+                        local seedTool = entry.tool
+                        local count = entry.amount
+                        while count > 0 and seedTool.Parent do
+                            local spot = nextSpot()
+                            if not spot then
+                                outOfSpots = true
+                                break
+                            end
+                            if not ensureEquipped(seedTool) then break end
+                            local seedName = seedTool:GetAttribute("SeedTool")
+                            if not seedName then break end
 
-                                teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
-                                task.wait(PLANT_SETTLE)
-                                Remotes.PlantSeed:Fire(spot, seedName, seedTool)
-
+                            teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
+                            task.wait(PLANT_SETTLE)
+                            if safeFire(Remotes.PlantSeed, spot, seedName, seedTool) then
                                 _occMark(spot)
                                 _optMark(spot)
                                 _densAdd(spot)
                                 _candidDirty = true
                                 placed += 1
-                                count -= 1
                             end
-                        end
-
-                        humanoid:UnequipTools()
-                        if placed > 0 then
-                            markGardenDirty()
-                            debugLog("Auto Plant", "Planted", placed, "seeds")
-                        end
-                        if outOfSpots then
-                            debugLog("Auto Plant", "No more available spots")
+                            count -= 1
                         end
                     end
-                elseif #seedTools == 0 then
-                    debugLog("Auto Plant", "No selected seeds left in inventory")
+
+                    humanoid:UnequipTools()
+                    if placed > 0 then
+                        markGardenDirty()
+                        debugLog("Auto Plant", "Planted", placed, "seeds")
+                    end
+                    if outOfSpots then
+                        debugLog("Auto Plant", "No more available spots")
+                    end
                 end
+            elseif #seedTools == 0 then
+                debugLog("Auto Plant", "No selected seeds left in inventory")
             end
         end
     end
 end)
+
 local RadiusMap = {}
 do
     local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
@@ -1615,78 +1470,77 @@ local function scoreSprinklerCands()
     return out
 end
 
-task.spawn(function()
+featureLoop("SprinklerLoop", 1, function()
     local PLACE_SETTLE = 0.1
-    while true do
-        task.wait(1)
-        if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
-            local plotId = LocalPlayer:GetAttribute("PlotId")
-            if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
-                tickGarden()
+    if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
+        local plotId = LocalPlayer:GetAttribute("PlotId")
+        if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
+            tickGarden()
 
-                local sprinklerSet = selectedSet(Options.SprinklersToUse)
-                local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
-                local existingCounts, occupied = buildSprinklerState(synced)
+            local sprinklerSet = selectedSet(Options.SprinklersToUse)
+            local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
+            local existingCounts, occupied = buildSprinklerState(synced)
 
-                local sortedTypes = {}
-                for sName, tools in pairs(_sprinklerInventory) do
-                    if isSelected(sprinklerSet, sName) then
-                        local toPlace = #tools - (existingCounts[sName] or 0)
-                        toPlace = math.min(toPlace, #tools)
-                        if toPlace > 0 then
-                            sortedTypes[#sortedTypes + 1] = {
-                                Name = sName, ToPlace = toPlace,
-                                Radius = RadiusMap[sName] or 0, Tools = tools,
-                            }
-                        end
+            local sortedTypes = {}
+            for sName, tools in pairs(_sprinklerInventory) do
+                if isSelected(sprinklerSet, sName) then
+                    local toPlace = #tools - (existingCounts[sName] or 0)
+                    toPlace = math.min(toPlace, #tools)
+                    if toPlace > 0 then
+                        sortedTypes[#sortedTypes + 1] = {
+                            Name = sName, ToPlace = toPlace,
+                            Radius = RadiusMap[sName] or 0, Tools = tools,
+                        }
                     end
                 end
+            end
 
-                if #sortedTypes > 0 then
-                    table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
-                    teleport("Garden")
+            if #sortedTypes > 0 then
+                table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
+                teleport("Garden")
 
-                    local candidates = scoreSprinklerCands()
-                    local char = LocalPlayer.Character
-                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                local candidates = scoreSprinklerCands()
+                local char = LocalPlayer.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
 
-                    if #candidates > 0 and humanoid then
-                        local totalPlaced = 0
-                        for _, st in ipairs(sortedTypes) do
-                            local placed = 0
-                            local tools = st.Tools
-                            local name = st.Name
-                            local r = st.Radius
+                if #candidates > 0 and humanoid then
+                    local totalPlaced = 0
+                    for _, st in ipairs(sortedTypes) do
+                        local placed = 0
+                        local tools = st.Tools
+                        local name = st.Name
+                        local r = st.Radius
 
-                            for _, cand in ipairs(candidates) do
-                                if placed >= st.ToPlace then break end
-                                if not isCovered(occupied, cand.Position, name) then
-                                    local tool = tools[placed + 1]
-                                    if tool then
-                                        if tool.Parent ~= char then
-                                            humanoid:EquipTool(tool)
-                                        end
-                                        teleport(cand.Position + Vector3.new(0, 2, 0), false)
-                                        task.wait(PLACE_SETTLE)
-                                        Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
+                        for _, cand in ipairs(candidates) do
+                            if placed >= st.ToPlace then break end
+                            if not isCovered(occupied, cand.Position, name) then
+                                local tool = tools[placed + 1]
+                                if tool then
+                                    if tool.Parent ~= char then
+                                        humanoid:EquipTool(tool)
+                                    end
+                                    teleport(cand.Position + Vector3.new(0, 2, 0), false)
+                                    task.wait(PLACE_SETTLE)
+                                    if safeFire(Remotes.PlaceSprinkler, cand.Position, name, tool, plotId) then
                                         occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
                                         placed += 1
                                     end
                                 end
                             end
-                            totalPlaced += placed
                         end
-                        humanoid:UnequipTools()
-                        if totalPlaced > 0 then
-                            markGardenDirty()
-                            debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
-                        end
+                        totalPlaced += placed
+                    end
+                    humanoid:UnequipTools()
+                    if totalPlaced > 0 then
+                        markGardenDirty()
+                        debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
                     end
                 end
             end
         end
     end
 end)
+
 local _fruitReg = {}
 local _fruitConns = {}
 local _sellValueCache = {}
@@ -1825,248 +1679,241 @@ LocalPlayer.ChildAdded:Connect(function(c)
     if c:IsA("Backpack") then _setupFruitTracking(c) end
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(0.9)
-        if Options.FavoriteEnabled.Value and playerAlive() and next(_favQueue) ~= nil then
-            local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, Variant = true, SellPrice = true }
-            local minS = tonumber(Options.FavoriteMinPrice.Value) or 0
-            local mutSet = selectedSet(Options.FavoriteMutations)
-            local remote = Remotes.SetFruitFavorite
+featureLoop("FavoriteLoop", 0.9, function()
+    if Options.FavoriteEnabled.Value and playerAlive() and next(_favQueue) ~= nil then
+        local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, Variant = true, SellPrice = true }
+        local minS = tonumber(Options.FavoriteMinPrice.Value) or 0
+        local mutSet = selectedSet(Options.FavoriteMutations)
+        local remote = Remotes.SetFruitFavorite
 
-            local processing = _favQueue
-            _favQueue = _favQueueSwap
-            _favQueueSwap = processing
+        local processing = _favQueue
+        _favQueue = _favQueueSwap
+        _favQueueSwap = processing
 
-            local favorited = 0
-            for tool in pairs(processing) do
-                local rec = _fruitReg[tool]
-                if rec and not rec.isFavorite then
-                    local shouldFav = false
+        local favorited = 0
+        for tool in pairs(processing) do
+            local rec = _fruitReg[tool]
+            if rec and not rec.isFavorite then
+                local shouldFav = false
 
-                    if checks["Mutation"] then
-                        local mut = rec.mutation
-                        if mut and isSelected(mutSet, mut) then shouldFav = true end
-                    end
-                    if not shouldFav and checks["Variant"] then
-                        local variant = rec.variant
-                        if variant and variant ~= "Normal" then shouldFav = true end
-                    end
-                    if not shouldFav and checks["Sell Price"] then
-                        local sp = _getCachedSellValue(tool)
-                        if sp and sp >= minS then shouldFav = true end
-                    end
+                if checks["Mutation"] then
+                    local mut = rec.mutation
+                    if mut and isSelected(mutSet, mut) then shouldFav = true end
+                end
+                if not shouldFav and checks["Variant"] then
+                    local variant = rec.variant
+                    if variant and variant ~= "Normal" then shouldFav = true end
+                end
+                if not shouldFav and checks["Sell Price"] then
+                    local sp = _getCachedSellValue(tool)
+                    if sp and sp >= minS then shouldFav = true end
+                end
 
-                    if shouldFav then
-                        rec.isFavorite = true
-                        tool:SetAttribute("IsFavorite", true)
-                        if remote then remote:Fire(rec.id, true) end
-                        favorited += 1
-                    end
+                if shouldFav then
+                    rec.isFavorite = true
+                    tool:SetAttribute("IsFavorite", true)
+                    safeFire(remote, rec.id, true)
+                    favorited += 1
                 end
             end
+        end
 
-            table.clear(processing)
-            if favorited > 0 then
-                debugLog("Auto Favorite", "Favorited", favorited, "fruit")
-            end
+        table.clear(processing)
+        if favorited > 0 then
+            debugLog("Auto Favorite", "Favorited", favorited, "fruit")
         end
     end
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if Options.SellEnabled.Value and playerAlive() and next(_sellSet) ~= nil then
-            local mode = Options.SellMode.Value
+featureLoop("SellLoop", 5, function()
+    if Options.SellEnabled.Value and playerAlive() and next(_sellSet) ~= nil then
+        local mode = Options.SellMode.Value
+        local delay = clampNumberInput(Options.SellDelay.Value, 1, 0.5, 60)
 
-            if mode == "Sell All" then
-                if Remotes.SellAll then
-                    Remotes.SellAll:Fire()
-                    debugLog("Auto Sell", "Sell All fired")
-                    task.wait(tonumber(Options.SellDelay.Value) or 0.9)
-                end
-            else
-                local wanted = selectedSet(Options.SellFruits)
-                local sellFruit = Remotes.SellFruit
-                if sellFruit then
-                    local sold = 0
-                    for tool in pairs(_sellSet) do
-                        local rec = _fruitReg[tool]
-                        if rec and isSelected(wanted, rec.name) then
-                            sellFruit:Fire(rec.id)
+        if mode == "Sell All" then
+            if safeFire(Remotes.SellAll) then
+                debugLog("Auto Sell", "Sell All fired")
+            end
+            task.wait(delay)
+        else
+            local wanted = selectedSet(Options.SellFruits)
+            local sellFruit = Remotes.SellFruit
+            if sellFruit then
+                local sold = 0
+                for tool in pairs(_sellSet) do
+                    local rec = _fruitReg[tool]
+                    if rec and isSelected(wanted, rec.name) then
+                        if safeFire(sellFruit, rec.id) then
                             sold += 1
                         end
                     end
-                    if sold > 0 then
-                        debugLog("Auto Sell", "Sold", sold, "fruit")
-                    end
                 end
-                task.wait(tonumber(Options.SellDelay.Value) or 0.9)
+                if sold > 0 then
+                    debugLog("Auto Sell", "Sold", sold, "fruit")
+                end
             end
+            task.wait(delay)
         end
     end
 end)
-task.spawn(function()
-    while true do
-        task.wait(10)
-        if Options.BuySeedsEnabled.Value then
-            local seedSet = selectedSet(Options.SeedsToBuy)
-            local amount = tonumber(Options.AmountPerSeed.Value) or 1
-            for seedName, price in pairs(seedPriceMap) do
-                if isSelected(seedSet, seedName) then
-                    local stock = getStockValue(SeedShopItems, seedName)
-                    if stock > 0 then
-                        local toBuy = math.min(amount, stock)
-                        for i = 1, toBuy do
-                            if getBalance() < price then break end
-                            Remotes.PurchaseSeed:Fire(seedName)
-                            task.wait(0.08)
-                        end
+
+local function runAutoBuy(config)
+    if not config.enabledOption.Value then return end
+    local selectedNames = selectedSet(config.selectOption)
+    local amount = clampNumberInput(config.amountOption.Value, 1, 1, 999)
+    local bought = 0
+
+    for itemName, price in pairs(config.priceMap) do
+        if isSelected(selectedNames, itemName) then
+            local stock = getStockValue(config.stockFolder, itemName)
+            if stock > 0 then
+                local toBuy = math.min(amount, stock)
+                for _ = 1, toBuy do
+                    if getBalance() < price then break end
+                    if safeFire(config.remote, itemName) then
+                        bought += 1
                     end
+                    task.wait(0.08)
                 end
+            end
+        end
+    end
+
+    if bought > 0 then
+        debugLog(config.label, "Bought", bought, "items")
+    end
+end
+
+featureLoop("BuySeedsLoop", 10, function()
+    runAutoBuy({
+        enabledOption = Options.BuySeedsEnabled,
+        selectOption = Options.SeedsToBuy,
+        amountOption = Options.AmountPerSeed,
+        priceMap = seedPriceMap,
+        stockFolder = SeedShopItems,
+        remote = Remotes.PurchaseSeed,
+        label = "Auto Buy Seeds",
+    })
+end)
+
+featureLoop("BuyGearsLoop", 10, function()
+    runAutoBuy({
+        enabledOption = Options.BuyGearsEnabled,
+        selectOption = Options.GearsToBuy,
+        amountOption = Options.AmountPerGear,
+        priceMap = gearPriceMap,
+        stockFolder = GearShopItems,
+        remote = Remotes.PurchaseGear,
+        label = "Auto Buy Gears",
+    })
+end)
+
+featureLoop("BuyCratesLoop", 10, function()
+    local cratePriceMap = {}
+    for _, crate in ipairs(CrateData.GetAllCrates()) do
+        local name = type(crate) == "table" and crate.Name or crate
+        local price = getCratePrice(name)
+        if price then
+            cratePriceMap[name] = price
+        end
+    end
+    runAutoBuy({
+        enabledOption = Options.BuyCratesEnabled,
+        selectOption = Options.CratesToBuy,
+        amountOption = Options.AmountPerCrate,
+        priceMap = cratePriceMap,
+        stockFolder = CrateShopItems,
+        remote = Remotes.PurchaseCrate,
+        label = "Auto Buy Crates",
+    })
+end)
+
+featureLoop("BuySlotsLoop", 5, function()
+    if Options.BuySlotsEnabled.Value then
+        local maxSlots = clampNumberInput(Options.MaxSlots.Value, 6, 1, 200)
+        local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+        if type(currentSlots) ~= "number" or currentSlots <= 0 then
+            currentSlots = PetSlotPrices.BaseMax
+        end
+        currentSlots = math.floor(currentSlots)
+        while currentSlots < maxSlots do
+            local price = PetSlotPrices.GetNextPrice(currentSlots)
+            if not price then break end
+            if getBalance() < price then break end
+            if not safeFire(Remotes.RequestPurchasePetSlot) then break end
+            task.wait(0.5)
+            local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+            if type(newSlots) == "number" and newSlots > currentSlots then
+                currentSlots = math.floor(newSlots)
+            else
+                break
             end
         end
     end
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(10)
-        if Options.BuyGearsEnabled.Value then
-            local gearSet = selectedSet(Options.GearsToBuy)
-            local amount = tonumber(Options.AmountPerGear.Value) or 1
-            for gearName, price in pairs(gearPriceMap) do
-                if isSelected(gearSet, gearName) then
-                    local stock = getStockValue(GearShopItems, gearName)
-                    if stock > 0 then
-                        local toBuy = math.min(amount, stock)
-                        for i = 1, toBuy do
-                            if getBalance() < price then break end
-                            Remotes.PurchaseGear:Fire(gearName)
-                            task.wait(0.08)
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
+local function runAutoOpen(config)
+    if not (config.enabledOption.Value and playerAlive()) then return end
+    local selectedNames = selectedSet(config.selectOption)
+    local amount = clampNumberInput(config.amountOption.Value, 1, 1, 999)
 
-task.spawn(function()
-    while true do
-        task.wait(10)
-        if Options.BuyCratesEnabled.Value then
-            local crateSet = selectedSet(Options.CratesToBuy)
-            local amount = tonumber(Options.AmountPerCrate.Value) or 1
-            for _, crate in ipairs(CrateData.GetAllCrates()) do
-                local crateName = type(crate) == "table" and crate.Name or crate
-                if isSelected(crateSet, crateName) then
-                    local price = getCratePrice(crateName)
-                    if price then
-                        local stock = getStockValue(CrateShopItems, crateName)
-                        if stock > 0 then
-                            local toBuy = math.min(amount, stock)
-                            for i = 1, toBuy do
-                                if getBalance() < price then break end
-                                Remotes.PurchaseCrate:Fire(crateName)
-                                task.wait(0.08)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if Options.BuySlotsEnabled.Value then
-            local maxSlots = tonumber(Options.MaxSlots.Value) or 6
-            local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-            if type(currentSlots) ~= "number" or currentSlots <= 0 then
-                currentSlots = PetSlotPrices.BaseMax
-            end
-            currentSlots = math.floor(currentSlots)
-            while currentSlots < maxSlots do
-                local price = PetSlotPrices.GetNextPrice(currentSlots)
-                if not price then break end
-                if getBalance() < price then break end
-                Remotes.RequestPurchasePetSlot:Fire()
-                task.wait(0.5)
-                local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-                if type(newSlots) == "number" and newSlots > currentSlots then
-                    currentSlots = math.floor(newSlots)
+    for _, itemName in ipairs(config.names) do
+        if isSelected(selectedNames, itemName) then
+            local opened = 0
+            while opened < amount do
+                local ok, res = pcall(function() return config.remote:Fire(itemName) end)
+                if not ok then break end
+                if type(res) == "table" and res.Success then
+                    opened += 1
+                    task.wait(0.2)
                 else
                     break
                 end
             end
+            if opened > 0 then
+                debugLog(config.label, "Opened", opened, itemName)
+            end
         end
     end
-end)
-
-local function drainOpen(remote, name, wantCount)
-    local opened = 0
-    while opened < wantCount do
-        local ok, res = pcall(function() return remote:Fire(name) end)
-        if not ok then break end
-        if type(res) == "table" and res.Success then
-            opened += 1
-            task.wait(0.2)
-        else
-            break
-        end
-    end
-    return opened
 end
 
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if Options.OpenEggsEnabled.Value and playerAlive() then
-            local eggSet = selectedSet(Options.EggsToOpen)
-            local amount = tonumber(Options.OpenEggsAmount.Value) or 1
-            for _, eggName in ipairs({ "Common Egg", "Rare Egg", "Legendary Egg" }) do
-                if isSelected(eggSet, eggName) then
-                    drainOpen(Remotes.OpenEgg, eggName, amount)
-                end
-            end
-        end
-    end
+featureLoop("OpenEggsLoop", 3, function()
+    runAutoOpen({
+        enabledOption = Options.OpenEggsEnabled,
+        selectOption = Options.EggsToOpen,
+        amountOption = Options.OpenEggsAmount,
+        names = { "Common Egg", "Rare Egg", "Legendary Egg" },
+        remote = Remotes.OpenEgg,
+        label = "Auto Open Eggs",
+    })
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if Options.OpenPacksEnabled.Value and playerAlive() then
-            local packSet = selectedSet(Options.PacksToOpen)
-            local amount = tonumber(Options.OpenPacksAmount.Value) or 1
-            for _, packName in ipairs({ "Basic Pack", "Premium Pack" }) do
-                if isSelected(packSet, packName) then
-                    drainOpen(Remotes.OpenSeedPack, packName, amount)
-                end
-            end
-        end
-    end
+featureLoop("OpenPacksLoop", 3, function()
+    runAutoOpen({
+        enabledOption = Options.OpenPacksEnabled,
+        selectOption = Options.PacksToOpen,
+        amountOption = Options.OpenPacksAmount,
+        names = { "Basic Pack", "Premium Pack" },
+        remote = Remotes.OpenSeedPack,
+        label = "Auto Open Seed Packs",
+    })
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if Options.OpenCratesEnabled.Value and playerAlive() then
-            local crateSet = selectedSet(Options.CratesToOpen)
-            local amount = tonumber(Options.OpenCratesAmount.Value) or 1
-            for _, crate in ipairs(CrateData.GetAllCrates()) do
-                local crateName = type(crate) == "table" and crate.Name or crate
-                if isSelected(crateSet, crateName) then
-                    drainOpen(Remotes.OpenCrate, crateName, amount)
-                end
-            end
-        end
+featureLoop("OpenCratesLoop", 3, function()
+    local crateNames = {}
+    for _, crate in ipairs(CrateData.GetAllCrates()) do
+        crateNames[#crateNames + 1] = type(crate) == "table" and crate.Name or crate
     end
+    runAutoOpen({
+        enabledOption = Options.OpenCratesEnabled,
+        selectOption = Options.CratesToOpen,
+        amountOption = Options.OpenCratesAmount,
+        names = crateNames,
+        remote = Remotes.OpenCrate,
+        label = "Auto Open Crates",
+    })
 end)
+
 local function buildPetIndex()
     local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
     local byName = {}
@@ -2181,7 +2028,7 @@ local function syncPets()
     debugLog("Auto Equip", "Unequipping", #toUnequip, "Equipping", #toEquip)
 
     for _, uuid in ipairs(toUnequip) do
-        Remotes.RequestUnequip:Fire(uuid)
+        safeFire(Remotes.RequestUnequip, uuid)
     end
 
     if #toUnequip > 0 then
@@ -2191,18 +2038,20 @@ local function syncPets()
     local cap2 = getMaxEquippedPets()
     local currentlyEquipped = getEquippedCount()
 
+    local toolByPetId = {}
+    for _, tool in pairs(Backpack:GetChildren()) do
+        local petId = tool:GetAttribute("PetId")
+        if petId then
+            toolByPetId[petId] = tool
+        end
+    end
+
     for _, uuid in ipairs(toEquip) do
         if currentlyEquipped >= cap2 then
             debugLog("Auto Equip", "Cap reached, stopping equip pass")
             break
         end
-        local foundTool = nil
-        for _, tool in pairs(Backpack:GetChildren()) do
-            if (tool:GetAttribute("PetId") or "") == uuid then
-                foundTool = tool
-                break
-            end
-        end
+        local foundTool = toolByPetId[uuid]
         if foundTool then
             equipAndActivateTool(foundTool)
             currentlyEquipped += 1
@@ -2223,43 +2072,41 @@ if Remotes.PetUnequipped then
     end)
 end
 
-Backpack.ChildAdded:Connect(function()
-    markPetsDirty()
+Backpack.ChildAdded:Connect(function(tool)
+    local petId = tool:GetAttribute("PetId")
+    if petId then
+        markPetsDirty()
+    end
 end)
 
 local _equipPetsWasEnabled = false
 
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        local enabled = Options.EquipPetsEnabled.Value
-        local justEnabled = enabled and not _equipPetsWasEnabled
-        _equipPetsWasEnabled = enabled
+featureLoop("EquipPetsLoop", 0.3, function()
+    local enabled = Options.EquipPetsEnabled.Value
+    local justEnabled = enabled and not _equipPetsWasEnabled
+    _equipPetsWasEnabled = enabled
 
-        if justEnabled then
-            markPetsDirty()
-        end
+    if justEnabled then
+        markPetsDirty()
+    end
 
-        if enabled and playerAlive() and not _petsSyncing and _petsDirty then
-            _petsDirty = false
-            _petsSyncing = true
-            local ok, err = xpcall(syncPets, debug.traceback)
-            if not ok then
-                debugWarn("Auto Equip", "syncPets errored:", err)
-            end
-            _petsSyncing = false
+    if enabled and playerAlive() and not _petsSyncing and _petsDirty then
+        _petsDirty = false
+        _petsSyncing = true
+        local ok, err = xpcall(syncPets, debug.traceback)
+        if not ok then
+            debugWarn("Auto Equip", "syncPets errored:", err)
         end
+        _petsSyncing = false
     end
 end)
 
-task.spawn(function()
-    while true do
-        task.wait(20)
-        if Options.EquipPetsEnabled.Value then
-            markPetsDirty()
-        end
+featureLoop("EquipPetsRefresh", 20, function()
+    if Options.EquipPetsEnabled.Value then
+        markPetsDirty()
     end
 end)
+
 local function getIconUrl(iconCache, iconAssetId)
     if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
     local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
@@ -2288,11 +2135,8 @@ end
 
 local _petBuyIconCache = {}
 
-local function sendBuyPetWebhook(data, price, oneIn, guid)
-    local webhookUrl = Options.PetsWebhookURL.Value
-    local minLuck = tonumber(Options.MinLuckSent.Value) or 0
-    if oneIn < minLuck then return end
-    if not webhookUrl or webhookUrl == "" then return end
+local function sendPetCaptureWebhook(webhookUrl, note, data, price, oneIn, guid)
+    if not isValidWebhookUrl(webhookUrl) then return end
 
     local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
     local title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
@@ -2303,7 +2147,6 @@ local function sendBuyPetWebhook(data, price, oneIn, guid)
         { name = "server-job-id", value = tostring(game.JobId), inline = false },
         { name = "pet-unique-guid", value = tostring(guid or "N/A"), inline = false },
     }
-    local note = Options.PetsNote.Value
     if note and note ~= "" then
         table.insert(fields, { name = "Note", value = note, inline = false })
     end
@@ -2321,7 +2164,7 @@ local function sendBuyPetWebhook(data, price, oneIn, guid)
         payload = HttpService:JSONEncode({ embeds = { embed } })
     end)
     if not ok or not payload then
-        debugWarn("Auto Buy Pets", "Failed to encode webhook payload")
+        debugWarn("Pet Capture", "Failed to encode webhook payload")
         return
     end
 
@@ -2334,11 +2177,111 @@ local function sendBuyPetWebhook(data, price, oneIn, guid)
         })
     end)
     if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
-        debugWarn("Auto Buy Pets", "Webhook send failed")
+        debugWarn("Pet Capture", "Webhook send failed")
     end
 end
 
-local function shouldBuyPet(data)
+local PetPurchaseCore = {}
+do
+    local buying = {}
+    local pendingConfirm = {}
+    local confirmedGuids = {}
+    local activeCount = 0
+
+    function PetPurchaseCore.findGuidForPet(petName)
+        if not wildPetSpawns then return nil end
+        for _, child in ipairs(wildPetSpawns:GetChildren()) do
+            local pn, g = parseWildPetName(child.Name)
+            if pn == petName and g then return g end
+        end
+        return nil
+    end
+
+    local function executeCapture(refPart, petName, data, guid, captureRemote)
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        pendingConfirm[petName] = {
+            Price = refPart:GetAttribute("Price") or data.BasePrice,
+            guid = guid,
+        }
+
+        for _ = 0, 2 do
+            if guid and confirmedGuids[guid] then break end
+            if not refPart.Parent then break end
+            local owner = refPart:GetAttribute("OwnerName")
+            if owner and #owner > 1 then break end
+
+            teleport(refPart.Position + Vector3.new(0, 3, 0))
+            task.wait(0.2)
+
+            safeFire(captureRemote, refPart)
+
+            local deadline = os.clock() + 2
+            while os.clock() < deadline do
+                if guid and confirmedGuids[guid] then break end
+                if not refPart.Parent then break end
+                task.wait(0.1)
+            end
+            if guid and confirmedGuids[guid] then break end
+        end
+
+        pendingConfirm[petName] = nil
+    end
+
+    function PetPurchaseCore.tryCapture(config)
+        local refPart = config.refPart
+        local petName = config.petName
+        local data = config.data
+        local captureRemote = config.captureRemote
+        local shouldBuy = config.shouldBuy
+        local enabled = config.enabled
+
+        if not enabled then return end
+        if buying[refPart] then return end
+
+        local owner = refPart:GetAttribute("OwnerName")
+        if owner and #owner > 1 then return end
+        if not shouldBuy then return end
+
+        local price = refPart:GetAttribute("Price") or data.BasePrice
+        if not price or getBalance() < price then return end
+
+        local parent = refPart.Parent
+        local guid = nil
+        if parent then
+            local _, g = parseWildPetName(parent.Name)
+            guid = g
+        end
+        if guid and (buying[guid] or confirmedGuids[guid]) then return end
+
+        buying[refPart] = true
+        if guid then buying[guid] = true end
+
+        activeCount += 1
+        local ok, err = pcall(executeCapture, refPart, petName, data, guid, captureRemote)
+        if not ok then
+            debugWarn("Pet Capture", "executeCapture errored:", err)
+        end
+        activeCount -= 1
+
+        buying[refPart] = nil
+        if guid then buying[guid] = nil end
+    end
+
+    function PetPurchaseCore.onCaptureConfirmed(petName, onConfirmed)
+        local meta = pendingConfirm[petName]
+        local data = PetData[petName]
+        if not data then return end
+        local guid = meta and meta.guid or PetPurchaseCore.findGuidForPet(petName)
+        if guid then confirmedGuids[guid] = true end
+        local price = (meta and meta.Price) or data.BasePrice or 0
+        onConfirmed(data, price, guid)
+    end
+end
+
+local function shouldBuyWildPet(data)
     local raritySet = selectedSet(Options.TargetRarities)
     local nameSet = selectedSet(Options.TargetPets)
     if nameSet and nameSet[data.DisplayName] then return true end
@@ -2347,123 +2290,47 @@ local function shouldBuyPet(data)
     return false
 end
 
-local petBuying = {}
-local petPendingConfirm = {}
-local petConfirmedGuids = {}
-local PetBuyState = { active = 0 }
-
-local function findGuidForPet(petName)
-    if not wildPetSpawns then return nil end
-    for _, child in ipairs(wildPetSpawns:GetChildren()) do
-        local pn, g = parseWildPetName(child.Name)
-        if pn == petName and g then return g end
-    end
-    return nil
-end
-
-local function executeBuyPet(refPart, petName, data, guid)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    petPendingConfirm[petName] = {
-        Price = refPart:GetAttribute("Price") or data.BasePrice,
-        guid = guid,
-    }
-
-    for _ = 0, 2 do
-        if guid and petConfirmedGuids[guid] then break end
-        if not refPart.Parent then break end
-        local owner = refPart:GetAttribute("OwnerName")
-        if owner and #owner > 1 then break end
-
-        teleport(refPart.Position + Vector3.new(0, 3, 0))
-        task.wait(0.2)
-
-        local ok, err = pcall(function()
-            Remotes.WildPetTame:Fire(refPart)
-        end)
-        if not ok then
-            debugWarn("Auto Buy Pets", "WildPetTame fire failed:", err)
-        end
-
-        local deadline = os.clock() + 2
-        while os.clock() < deadline do
-            if guid and petConfirmedGuids[guid] then break end
-            if not refPart.Parent then break end
-            task.wait(0.1)
-        end
-        if guid and petConfirmedGuids[guid] then break end
-    end
-
-    petPendingConfirm[petName] = nil
-end
-
-local function tryBuyPet(refPart)
-    if not Options.BuyPetsEnabled.Value then return end
-    if petBuying[refPart] then return end
-
-    local owner = refPart:GetAttribute("OwnerName")
-    if owner and #owner > 1 then return end
-
-    local petName = refPart:GetAttribute("PetName")
-    local data = petName and PetData[petName]
-    if not data then return end
-    if not shouldBuyPet(data) then return end
-
-    local price = refPart:GetAttribute("Price") or data.BasePrice
-    if not price or getBalance() < price then return end
-
-    local parent = refPart.Parent
-    local guid = nil
-    if parent then
-        local _, g = parseWildPetName(parent.Name)
-        guid = g
-    end
-    if guid and (petBuying[guid] or petConfirmedGuids[guid]) then return end
-
-    petBuying[refPart] = true
-    if guid then petBuying[guid] = true end
-
-    PetBuyState.active += 1
-    local ok, err = pcall(executeBuyPet, refPart, petName, data, guid)
-    if not ok then
-        debugWarn("Auto Buy Pets", "executeBuyPet errored:", err)
-    end
-    PetBuyState.active -= 1
-
-    petBuying[refPart] = nil
-    if guid then petBuying[guid] = nil end
-end
-
 if Remotes.WildPetCollected then
     Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
         local petName = select(2, ...)
         if not petName then return end
-        local meta = petPendingConfirm[petName]
-        local data = PetData[petName]
-        if not data then return end
-        local guid = meta and meta.guid or findGuidForPet(petName)
-        if guid then petConfirmedGuids[guid] = true end
-        local price = (meta and meta.Price) or data.BasePrice or 0
-        local oneIn = calcOneIn(data.SpawnChance)
-        task.spawn(sendBuyPetWebhook, data, price, oneIn, guid)
-        debugLog("Auto Buy Pets", "Bought", petName)
+        PetPurchaseCore.onCaptureConfirmed(petName, function(data, price, guid)
+            local oneIn = calcOneIn(data.SpawnChance)
+            local webhookUrl = Options.PetsWebhookURL.Value
+            local note = Options.PetsNote.Value
+            local minLuck = clampNumberInput(Options.MinLuckSent.Value, 0, 0, nil)
+            if oneIn >= minLuck then
+                task.spawn(sendPetCaptureWebhook, webhookUrl, note, data, price, oneIn, guid)
+            end
+            debugLog("Auto Buy Pets", "Bought", petName)
+        end)
     end)
 end
 
 if wildPetRef then
+    local function handleRefPart(refPart)
+        local petName = refPart:GetAttribute("PetName")
+        local data = petName and PetData[petName]
+        if not data then return end
+        PetPurchaseCore.tryCapture({
+            refPart = refPart,
+            petName = petName,
+            data = data,
+            captureRemote = Remotes.WildPetTame,
+            shouldBuy = shouldBuyWildPet(data),
+            enabled = Options.BuyPetsEnabled.Value,
+        })
+    end
+
     wildPetRef.ChildAdded:Connect(function(refPart)
-        task.spawn(tryBuyPet, refPart)
+        task.spawn(handleRefPart, refPart)
     end)
 
-    task.spawn(function()
-        while true do
-            task.wait(15)
-            for _, refPart in ipairs(wildPetRef:GetChildren()) do
-                task.spawn(tryBuyPet, refPart)
-            end
+    featureLoop("WildPetSweep", 15, function()
+        for _, refPart in ipairs(wildPetRef:GetChildren()) do
+            task.spawn(handleRefPart, refPart)
         end
     end)
 end
+
 Window:SelectTab(1)
