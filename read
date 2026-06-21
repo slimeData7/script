@@ -1,5 +1,6 @@
 task.spawn(function()
-    for _, conn in pairs(getconnections(game.Players.LocalPlayer.Idled)) do
+    local idledConns = typeof(getconnections) == "function" and getconnections(game.Players.LocalPlayer.Idled) or {}
+    for _, conn in pairs(idledConns) do
         conn:Disable()
     end
 
