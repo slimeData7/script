@@ -1,4 +1,5 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local SharedModules = ReplicatedStorage:WaitForChild("SharedModules")
@@ -9,372 +10,274 @@ local SellValueData = require(SharedModules:WaitForChild("SellValueData"))
 local PetData = require(SharedData:WaitForChild("PetData"))
 local CrateData = require(SharedModules:WaitForChild("CrateData"))
 local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
-local SprinklerData = require(SharedModules:WaitForChild("SprinklerData"))
 
 getgenv().IdiotHubDebug = false
 getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
+getgenv().IdiotHubSilent = getgenv().IdiotHubSilent or false
 
 local MAX_LOG_LINES = 300
 local SETTLE_TIME = 0.1
-local DENSITY_CELL = 5
-local OPT_TTL = 8
-local GARDEN_TTL = 2
-local TELEPORT_THRESHOLD_SQ = 16
-local SPRINKLER_DETECT_RANGE_SQ = 15 * 15
-local WILD_PET_TIMEOUT = 2
-
-local function getExecutor()
-	if _G.identifyexecutor then
-		return _G.identifyexecutor()
-	end
-	return "Unknown"
-end
 
 local function debugLog(tag, ...)
-	local parts = { ... }
-	for i = 1, select("#", ...) do
-		parts[i] = tostring(parts[i])
-	end
-	local line = string.format("[%s] %s", tag, table.concat(parts, " "))
-	local log = getgenv().IdiotHubLog
-	log[#log + 1] = { text = line, time = os.time(), level = "info" }
-	if #log > MAX_LOG_LINES then table.remove(log, 1) end
-	if getgenv().IdiotHubDebug then
-		print("[IdiotHub]", "[" .. tag .. "]", ...)
-	end
+    local parts = { ... }
+    for i = 1, select("#", ...) do
+        parts[i] = tostring(parts[i])
+    end
+    local line = string.format("[%s] %s", tag, table.concat(parts, " "))
+    local log = getgenv().IdiotHubLog
+    log[#log + 1] = { text = line, time = os.time(), level = "info" }
+    if #log > MAX_LOG_LINES then table.remove(log, 1) end
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
+        print("[IdiotHub]", "[" .. tag .. "]", ...)
+    end
 end
 
 local function debugWarn(tag, ...)
-	local parts = { ... }
-	for i = 1, select("#", ...) do
-		parts[i] = tostring(parts[i])
-	end
-	local line = string.format("[%s] %s", tag, table.concat(parts, " "))
-	local log = getgenv().IdiotHubLog
-	log[#log + 1] = { text = line, time = os.time(), level = "warn" }
-	if #log > MAX_LOG_LINES then table.remove(log, 1) end
-	if getgenv().IdiotHubDebug then
-		warn("[IdiotHub]", "[" .. tag .. "]", ...)
-	end
+    local parts = { ... }
+    for i = 1, select("#", ...) do
+        parts[i] = tostring(parts[i])
+    end
+    local line = string.format("[%s] %s", tag, table.concat(parts, " "))
+    local log = getgenv().IdiotHubLog
+    log[#log + 1] = { text = line, time = os.time(), level = "warn" }
+    if #log > MAX_LOG_LINES then table.remove(log, 1) end
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
+        warn("[IdiotHub]", "[" .. tag .. "]", ...)
+    end
 end
 
 local function featureLoop(name, interval, body)
-	task.spawn(function()
-		while true do
-			task.wait(interval)
-			local ok, err = xpcall(body, debug.traceback)
-			if not ok then
-				debugWarn(name, "errored:", err)
-			end
-		end
-	end)
+    task.spawn(function()
+        while true do
+            task.wait(interval)
+            local ok, err = xpcall(body, debug.traceback)
+            if not ok then
+                debugWarn(name, "errored:", err)
+            end
+        end
+    end)
 end
 
-local function buildMutationNames()
-	local mutations = {}
-	if PetData then
-		local seen = {}
-		for _, pet in pairs(PetData) do
-			if type(pet) == "table" and pet.Mutation and not seen[pet.Mutation] then
-				seen[pet.Mutation] = true
-				mutations[#mutations + 1] = pet.Mutation
-			end
-		end
-	end
-	if #mutations == 0 then
-		mutations = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
-	end
-	return mutations
-end
-
-local function buildEggNames()
-	local eggs = {}
-	local crateData = CrateData.GetAllCrates()
-	if crateData then
-		local seen = {}
-		for _, crate in ipairs(crateData) do
-			local name = type(crate) == "table" and crate.Name or crate
-			if name and name:match("Egg") and not seen[name] then
-				seen[name] = true
-				eggs[#eggs + 1] = name
-			end
-		end
-	end
-	if #eggs == 0 then
-		eggs = { "Common Egg", "Rare Egg", "Legendary Egg" }
-	end
-	return eggs
-end
-
-local function buildSeedPackNames()
-	local packs = {}
-	local crateData = CrateData.GetAllCrates()
-	if crateData then
-		local seen = {}
-		for _, crate in ipairs(crateData) do
-			local name = type(crate) == "table" and crate.Name or crate
-			if name and name:match("Pack") and not seen[name] then
-				seen[name] = true
-				packs[#packs + 1] = name
-			end
-		end
-	end
-	if #packs == 0 then
-		packs = { "Basic Pack", "Premium Pack" }
-	end
-	return packs
-end
-
-local function buildSprinklerNames()
-	local sprinklers = {}
-	local seen = {}
-	for _, entry in pairs(SprinklerData) do
-		if type(entry) == "table" then
-			if entry.SprinklerName and not seen[entry.SprinklerName] then
-				seen[entry.SprinklerName] = true
-				sprinklers[#sprinklers + 1] = entry.SprinklerName
-			else
-				for _, inner in pairs(entry) do
-					if type(inner) == "table" and inner.SprinklerName and not seen[inner.SprinklerName] then
-						seen[inner.SprinklerName] = true
-						sprinklers[#sprinklers + 1] = inner.SprinklerName
-					end
-				end
-			end
-		end
-	end
-	if #sprinklers == 0 then
-		sprinklers = { "Advanced Sprinkler", "Basic Sprinkler", "Godly Sprinkler" }
-	end
-	return sprinklers
-end
+local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
 
 local function withAll(list)
-	table.insert(list, 1, "All")
-	return list
+    table.insert(list, 1, "All")
+    return list
 end
 
 local function safeList(label, builder)
-	local ok, result = xpcall(builder, debug.traceback)
-	if ok and type(result) == "table" then
-		return withAll(result)
-	end
-	debugWarn(label, "list build failed:", result)
-	return withAll({})
+    local ok, result = xpcall(builder, debug.traceback)
+    if ok and type(result) == "table" then
+        return withAll(result)
+    end
+    debugWarn(label, "list build failed:", result)
+    return withAll({})
 end
 
 local function GetMutationNames()
-	return safeList("Mutations", buildMutationNames)
-end
-
-local function GetEggNames()
-	return safeList("Eggs", buildEggNames)
-end
-
-local function GetSeedPackNames()
-	return safeList("SeedPacks", buildSeedPackNames)
-end
-
-local function GetSprinklerNames()
-	return safeList("Sprinklers", buildSprinklerNames)
+    return safeList("Mutations", function()
+        local list = {}
+        for _, name in ipairs(MUTATIONS) do
+            table.insert(list, name)
+        end
+        return list
+    end)
 end
 
 local function GetSeedNames()
-	return safeList("Seeds", function()
-		local list = {}
-		for _, seed in ipairs(SeedData) do
-			table.insert(list, seed.SeedName)
-		end
-		return list
-	end)
+    return safeList("Seeds", function()
+        local list = {}
+        for _, seed in ipairs(SeedData) do
+            table.insert(list, seed.SeedName)
+        end
+        return list
+    end)
 end
 
 local function GetFruitNames()
-	return safeList("Fruits", function()
-		local list = {}
-		for name in pairs(SellValueData) do
-			table.insert(list, name)
-		end
-		return list
-	end)
+    return safeList("Fruits", function()
+        local list = {}
+        for name in pairs(SellValueData) do
+            table.insert(list, name)
+        end
+        return list
+    end)
 end
 
 local function GetPetRarities()
-	return safeList("PetRarities", function()
-		local list, seen = {}, {}
-		for _, pet in pairs(PetData) do
-			if type(pet) == "table" and pet.Rarity and not seen[pet.Rarity] then
-				seen[pet.Rarity] = true
-				table.insert(list, pet.Rarity)
-			end
-		end
-		return list
-	end)
+    return safeList("PetRarities", function()
+        local list, seen = {}, {}
+        for _, pet in pairs(PetData) do
+            if type(pet) == "table" and pet.Rarity and not seen[pet.Rarity] then
+                seen[pet.Rarity] = true
+                table.insert(list, pet.Rarity)
+            end
+        end
+        return list
+    end)
 end
 
 local function GetPetNames()
-	return safeList("PetNames", function()
-		local list = {}
-		for _, pet in pairs(PetData) do
-			if type(pet) == "table" and pet.DisplayName then
-				table.insert(list, pet.DisplayName)
-			end
-		end
-		return list
-	end)
+    return safeList("PetNames", function()
+        local list = {}
+        for _, pet in pairs(PetData) do
+            if type(pet) == "table" and pet.DisplayName then
+                table.insert(list, pet.DisplayName)
+            end
+        end
+        return list
+    end)
 end
 
 local function GetCrateNames()
-	return safeList("Crates", function()
-		local list = {}
-		for _, crate in ipairs(CrateData.GetAllCrates()) do
-			table.insert(list, type(crate) == "table" and crate.Name or crate)
-		end
-		return list
-	end)
+    return safeList("Crates", function()
+        local list = {}
+        for _, crate in ipairs(CrateData.GetAllCrates()) do
+            table.insert(list, type(crate) == "table" and crate.Name or crate)
+        end
+        return list
+    end)
 end
 
 local function GetGearNames()
-	return safeList("Gears", function()
-		local list = {}
-		for _, gear in ipairs(GearShopData.Data) do
-			table.insert(list, gear.ItemName)
-		end
-		return list
-	end)
+    return safeList("Gears", function()
+        local list = {}
+        for _, gear in ipairs(GearShopData.Data) do
+            table.insert(list, gear.ItemName)
+        end
+        return list
+    end)
 end
 
 local function HandleAllSelection(dropdown, values, label)
-	dropdown:OnChanged(function()
-		local selected = dropdown.Value
-		if selected["All"] then
-			local full = {}
-			for _, name in ipairs(values) do
-				if name ~= "All" then
-					full[name] = true
-				end
-			end
-			dropdown:SetValue(full)
-		end
-		debugLog(label or "Dropdown", "selection changed")
-	end)
+    dropdown:OnChanged(function()
+        local selected = dropdown.Value
+        if selected["All"] then
+            local full = {}
+            for _, name in ipairs(values) do
+                if name ~= "All" then
+                    full[name] = true
+                end
+            end
+            dropdown:SetValue(full)
+        end
+        debugLog(label or "Dropdown", "selection changed")
+    end)
 end
 
 local function logToggle(name, label)
-	return function()
-		local state = Fluent.Options[name] and Fluent.Options[name].Value
-		debugLog(label or name, state and "enabled" or "disabled")
-	end
+    return function()
+        local state = Fluent.Options[name] and Fluent.Options[name].Value
+        debugLog(label or name, state and "enabled" or "disabled")
+    end
 end
 
-pcall(function()
-	for _, conn in pairs(getconnections(game.Players.LocalPlayer.Idled)) do
-		conn:Disable()
-	end
-end)
-
-local VirtualUser = game:GetService("VirtualUser")
-game.Players.LocalPlayer.Idled:Connect(function()
-	VirtualUser:CaptureController()
-	VirtualUser:ClickButton2(Vector2.new())
-end)
-
 local Window = Fluent:CreateWindow({
-	Title = "IdiotHub",
-	SubTitle = "discord.gg/idiothub",
-	TabWidth = 160,
-	Size = UDim2.fromOffset(580, 460),
-	Acrylic = true,
-	Theme = "Rose",
-	MinimizeKey = Enum.KeyCode.LeftControl
+    Title = "IdiotHub",
+    SubTitle = "discord.gg/idiothub",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Rose",
+    MinimizeKey = Enum.KeyCode.LeftControl
 })
 
 local Tabs = {
-	Main = Window:AddTab({ Title = "Main", Icon = "home" }),
-	Farming = Window:AddTab({ Title = "Farming", Icon = "sprout" }),
-	Selling = Window:AddTab({ Title = "Selling", Icon = "coins" }),
-	Buying = Window:AddTab({ Title = "Buying", Icon = "shopping-cart" }),
-	Pets = Window:AddTab({ Title = "Pets", Icon = "cat" }),
-	Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
-	Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+    Main = Window:AddTab({ Title = "Main", Icon = "home" }),
+    Farming = Window:AddTab({ Title = "Farming", Icon = "sprout" }),
+    Selling = Window:AddTab({ Title = "Selling", Icon = "coins" }),
+    Buying = Window:AddTab({ Title = "Buying", Icon = "shopping-cart" }),
+    Pets = Window:AddTab({ Title = "Pets", Icon = "cat" }),
+    Opening = Window:AddTab({ Title = "Opening", Icon = "package" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
 local Options = Fluent.Options
 
 Tabs.Main:AddParagraph({
-	Title = "Script Version",
-	Content = "IdiotHub 1.2.0"
+    Title = "Script Version",
+    Content = "IdiotHub 1.1.0"
+})
+
+local executor = identifyexecutor()
+Tabs.Main:AddParagraph({
+    Title = "Executor",
+    Content = executor or "Unknown"
 })
 
 Tabs.Main:AddParagraph({
-	Title = "Executor",
-	Content = getExecutor()
+    Title = "Credits",
+    Content = "_somerandomidiot\nmalik9ng"
 })
 
 Tabs.Main:AddParagraph({
-	Title = "Credits",
-	Content = "_somerandomidiot\nmalik9ng"
-})
-
-Tabs.Main:AddParagraph({
-	Title = "Features",
-	Content = "Anti-AFK: Enabled"
+    Title = "Statistics",
+    Content = "Crops Harvested: 0\nMoney Earned: 0"
 })
 
 Tabs.Main:AddButton({
-	Title = "Copy Discord Invite",
-	Callback = function()
-		setclipboard("https://discord.gg/idiothub")
-		debugLog("Main", "Discord invite copied to clipboard")
-	end
+    Title = "Copy Discord Invite",
+    Callback = function()
+        setclipboard("https://discord.gg/idiothub")
+        debugLog("Main", "Discord invite copied to clipboard")
+    end
 })
 
 Tabs.Main:AddParagraph({
-	Title = "Theme",
-	Content = "Pick a look that's easy on the eyes"
+    Title = "Theme",
+    Content = "Pick a look that's easy on the eyes"
 })
 
 local THEME_NAMES = {
-	"Rose", "Amethyst", "Aqua",
-	"Dark", "Darker", "Light",
+    "Rose", "Amethyst", "Aqua",
+    "Dark", "Darker", "Light",
 }
 
 for _, themeName in ipairs(THEME_NAMES) do
-	Tabs.Main:AddButton({
-		Title = themeName,
-		Callback = function()
-			local ok = pcall(function()
-				Fluent:SetTheme(themeName)
-			end)
-			if ok then
-				debugLog("Theme", "switched to", themeName)
-			else
-				debugWarn("Theme", "SetTheme not supported by this Fluent build")
-			end
-		end
-	})
+    Tabs.Main:AddButton({
+        Title = themeName,
+        Callback = function()
+            local ok = pcall(function()
+                Fluent:SetTheme(themeName)
+            end)
+            if ok then
+                debugLog("Theme", "switched to", themeName)
+            else
+                debugWarn("Theme", "SetTheme not supported by this Fluent build")
+            end
+        end
+    })
 end
 
 Tabs.Farming:AddParagraph({ Title = "Auto Harvest", Content = "" })
 
 local HarvestMutationValues = GetMutationNames()
 local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
-	Title = "Mutations To Collect",
-	Values = HarvestMutationValues,
-	Multi = true,
-	Default = {}
+    Title = "Mutations To Collect",
+    Values = HarvestMutationValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues, "HarvestMutations")
 
+local HarvestVariantValues = withAll({ "Giant", "Normal", "Shiny" })
+local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
+    Title = "Variants To Collect",
+    Values = HarvestVariantValues,
+    Multi = true,
+    Default = {}
+})
+HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
+
 Tabs.Farming:AddToggle("HarvestInstantMutated", {
-	Title = "Collect Mutated Fruit On Sight",
-	Default = false
+    Title = "Collect Mutated Fruit On Sight",
+    Default = false
 })
 Options.HarvestInstantMutated:OnChanged(logToggle("HarvestInstantMutated", "Collect Mutated Fruit On Sight"))
 
 Tabs.Farming:AddToggle("HarvestEnabled", {
-	Title = "Enable Auto Harvest",
-	Default = false
+    Title = "Enable Auto Harvest",
+    Default = false
 })
 Options.HarvestEnabled:OnChanged(logToggle("HarvestEnabled", "Auto Harvest"))
 
@@ -382,111 +285,103 @@ Tabs.Farming:AddParagraph({ Title = "Auto Plant", Content = "" })
 
 local PlantSeedValues = GetSeedNames()
 local PlantSeedsDropdown = Tabs.Farming:AddDropdown("PlantSeeds", {
-	Title = "Seeds To Plant",
-	Values = PlantSeedValues,
-	Multi = true,
-	Default = {}
+    Title = "Seeds To Plant",
+    Values = PlantSeedValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(PlantSeedsDropdown, PlantSeedValues, "PlantSeeds")
 
 Tabs.Farming:AddToggle("PlantEnabled", {
-	Title = "Enable Auto Plant",
-	Default = false
+    Title = "Enable Auto Plant",
+    Default = false
 })
 Options.PlantEnabled:OnChanged(logToggle("PlantEnabled", "Auto Plant"))
 
 Tabs.Farming:AddParagraph({ Title = "Auto Sprinkler", Content = "" })
 
-local SprinklersToUseValues = GetSprinklerNames()
+local SprinklersToUseValues = withAll({ "Advanced Sprinkler", "Basic Sprinkler", "Godly Sprinkler" })
 local SprinklersToUseDropdown = Tabs.Farming:AddDropdown("SprinklersToUse", {
-	Title = "Sprinklers To Use",
-	Values = SprinklersToUseValues,
-	Multi = true,
-	Default = {}
+    Title = "Sprinklers To Use",
+    Values = SprinklersToUseValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(SprinklersToUseDropdown, SprinklersToUseValues, "SprinklersToUse")
 
 Tabs.Farming:AddToggle("SprinklerEnabled", {
-	Title = "Enable Auto Sprinkler",
-	Default = false
+    Title = "Enable Auto Sprinkler",
+    Default = false
 })
 Options.SprinklerEnabled:OnChanged(logToggle("SprinklerEnabled", "Auto Sprinkler"))
-
-Tabs.Farming:AddParagraph({ Title = "Auto Collect Seed Packs (RB & Gold)", Content = "" })
-
-Tabs.Farming:AddToggle("CollectSeedPacksEnabled", {
-	Title = "Enable Auto Collect Seed Packs",
-	Default = false
-})
-Options.CollectSeedPacksEnabled:OnChanged(logToggle("CollectSeedPacksEnabled", "Auto Collect Seed Packs"))
 
 Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
 
 Tabs.Selling:AddDropdown("SellMode", {
-	Title = "Sell Mode",
-	Values = { "Keep Favorites", "Sell All", "Sell Selected" },
-	Multi = false,
-	Default = 2
+    Title = "Sell Mode",
+    Values = { "Sell All", "Sell Selected" },
+    Multi = false,
+    Default = 1
 })
 Options.SellMode:OnChanged(function()
-	debugLog("Sell Mode", "changed to", Options.SellMode.Value)
+    debugLog("Sell Mode", "changed to", Options.SellMode.Value)
 end)
 
 local SellFruitValues = GetFruitNames()
 local SellFruitsDropdown = Tabs.Selling:AddDropdown("SellFruits", {
-	Title = "Fruits To Sell",
-	Values = SellFruitValues,
-	Multi = true,
-	Default = {}
+    Title = "Fruits To Sell",
+    Values = SellFruitValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(SellFruitsDropdown, SellFruitValues, "SellFruits")
 
 Tabs.Selling:AddInput("SellDelay", {
-	Title = "Sell Delay (Seconds)",
-	Default = "1",
-	Placeholder = "Seconds",
-	Numeric = true,
-	Finished = true
+    Title = "Sell Delay (Seconds)",
+    Default = "1",
+    Placeholder = "Seconds",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Selling:AddToggle("SellEnabled", {
-	Title = "Enable Auto Sell",
-	Default = false
+    Title = "Enable Auto Sell",
+    Default = false
 })
 Options.SellEnabled:OnChanged(logToggle("SellEnabled", "Auto Sell"))
 
 Tabs.Selling:AddParagraph({ Title = "Auto Favorite", Content = "" })
 
 Tabs.Selling:AddDropdown("FavoriteChecks", {
-	Title = "Favorite Conditions",
-	Values = { "Mutation", "Sell Price", "Variant" },
-	Multi = true,
-	Default = {}
+    Title = "Favorite Conditions",
+    Values = { "Mutation", "Sell Price", "Variant" },
+    Multi = true,
+    Default = {}
 })
 Options.FavoriteChecks:OnChanged(function()
-	debugLog("Favorite Conditions", "selection changed")
+    debugLog("Favorite Conditions", "selection changed")
 end)
 
 local FavoriteMutationValues = GetMutationNames()
 local FavoriteMutationsDropdown = Tabs.Selling:AddDropdown("FavoriteMutations", {
-	Title = "Favorite Mutations",
-	Values = FavoriteMutationValues,
-	Multi = true,
-	Default = {}
+    Title = "Favorite Mutations",
+    Values = FavoriteMutationValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(FavoriteMutationsDropdown, FavoriteMutationValues, "FavoriteMutations")
 
 Tabs.Selling:AddInput("FavoriteMinPrice", {
-	Title = "Minimum Sell Price",
-	Default = "0",
-	Placeholder = "Price",
-	Numeric = true,
-	Finished = true
+    Title = "Minimum Sell Price",
+    Default = "0",
+    Placeholder = "Price",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Selling:AddToggle("FavoriteEnabled", {
-	Title = "Enable Auto Favorite",
-	Default = false
+    Title = "Enable Auto Favorite",
+    Default = false
 })
 Options.FavoriteEnabled:OnChanged(logToggle("FavoriteEnabled", "Auto Favorite"))
 
@@ -494,24 +389,24 @@ Tabs.Buying:AddParagraph({ Title = "Auto Buy Seeds", Content = "" })
 
 local BuySeedValues = GetSeedNames()
 local SeedsToBuyDropdown = Tabs.Buying:AddDropdown("SeedsToBuy", {
-	Title = "Seeds To Buy",
-	Values = BuySeedValues,
-	Multi = true,
-	Default = {}
+    Title = "Seeds To Buy",
+    Values = BuySeedValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(SeedsToBuyDropdown, BuySeedValues, "SeedsToBuy")
 
 Tabs.Buying:AddInput("AmountPerSeed", {
-	Title = "Amount Per Seed",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount Per Seed",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Buying:AddToggle("BuySeedsEnabled", {
-	Title = "Enable Auto Buy Seeds",
-	Default = false
+    Title = "Enable Auto Buy Seeds",
+    Default = false
 })
 Options.BuySeedsEnabled:OnChanged(logToggle("BuySeedsEnabled", "Auto Buy Seeds"))
 
@@ -519,24 +414,24 @@ Tabs.Buying:AddParagraph({ Title = "Auto Buy Gears", Content = "" })
 
 local BuyGearValues = GetGearNames()
 local GearsToBuyDropdown = Tabs.Buying:AddDropdown("GearsToBuy", {
-	Title = "Gears To Buy",
-	Values = BuyGearValues,
-	Multi = true,
-	Default = {}
+    Title = "Gears To Buy",
+    Values = BuyGearValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(GearsToBuyDropdown, BuyGearValues, "GearsToBuy")
 
 Tabs.Buying:AddInput("AmountPerGear", {
-	Title = "Amount Per Gear",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount Per Gear",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Buying:AddToggle("BuyGearsEnabled", {
-	Title = "Enable Auto Buy Gears",
-	Default = false
+    Title = "Enable Auto Buy Gears",
+    Default = false
 })
 Options.BuyGearsEnabled:OnChanged(logToggle("BuyGearsEnabled", "Auto Buy Gears"))
 
@@ -544,40 +439,40 @@ Tabs.Buying:AddParagraph({ Title = "Auto Buy Crates", Content = "" })
 
 local BuyCrateValues = GetCrateNames()
 local CratesToBuyDropdown = Tabs.Buying:AddDropdown("CratesToBuy", {
-	Title = "Crates To Buy",
-	Values = BuyCrateValues,
-	Multi = true,
-	Default = {}
+    Title = "Crates To Buy",
+    Values = BuyCrateValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(CratesToBuyDropdown, BuyCrateValues, "CratesToBuy")
 
 Tabs.Buying:AddInput("AmountPerCrate", {
-	Title = "Amount Per Crate",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount Per Crate",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Buying:AddToggle("BuyCratesEnabled", {
-	Title = "Enable Auto Buy Crates",
-	Default = false
+    Title = "Enable Auto Buy Crates",
+    Default = false
 })
 Options.BuyCratesEnabled:OnChanged(logToggle("BuyCratesEnabled", "Auto Buy Crates"))
 
 Tabs.Buying:AddParagraph({ Title = "Auto Buy Pet Slots", Content = "" })
 
 Tabs.Buying:AddInput("MaxSlots", {
-	Title = "Maximum Slots",
-	Default = "10",
-	Placeholder = "Max",
-	Numeric = true,
-	Finished = true
+    Title = "Maximum Slots",
+    Default = "10",
+    Placeholder = "Max",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Buying:AddToggle("BuySlotsEnabled", {
-	Title = "Enable Auto Buy Pet Slots",
-	Default = false
+    Title = "Enable Auto Buy Pet Slots",
+    Default = false
 })
 Options.BuySlotsEnabled:OnChanged(logToggle("BuySlotsEnabled", "Auto Buy Pet Slots"))
 
@@ -585,55 +480,55 @@ Tabs.Pets:AddParagraph({ Title = "Auto Buy Pets", Content = "" })
 
 local TargetRarityValues = GetPetRarities()
 local TargetRaritiesDropdown = Tabs.Pets:AddDropdown("TargetRarities", {
-	Title = "Target Rarities",
-	Values = TargetRarityValues,
-	Multi = true,
-	Default = {}
+    Title = "Target Rarities",
+    Values = TargetRarityValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(TargetRaritiesDropdown, TargetRarityValues, "TargetRarities")
 
 local TargetPetValues = GetPetNames()
 local TargetPetsDropdown = Tabs.Pets:AddDropdown("TargetPets", {
-	Title = "Target Pets",
-	Values = TargetPetValues,
-	Multi = true,
-	Default = {}
+    Title = "Target Pets",
+    Values = TargetPetValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(TargetPetsDropdown, TargetPetValues, "TargetPets")
 
 Tabs.Pets:AddInput("MinLuckSent", {
-	Title = "Minimum Luck Sent",
-	Default = "0",
-	Placeholder = "Luck",
-	Numeric = true,
-	Finished = true
+    Title = "Minimum Luck Sent",
+    Default = "0",
+    Placeholder = "Luck",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Pets:AddInput("PetsWebhookURL", {
-	Title = "Webhook URL",
-	Default = "",
-	Placeholder = "Paste URL",
-	Numeric = false,
-	Finished = true
+    Title = "Webhook URL",
+    Default = "",
+    Placeholder = "Paste URL",
+    Numeric = false,
+    Finished = true
 })
 
 Tabs.Pets:AddInput("PetsNote", {
-	Title = "Note",
-	Default = "",
-	Placeholder = "Optional note",
-	Numeric = false,
-	Finished = true
+    Title = "Note",
+    Default = "",
+    Placeholder = "Optional note",
+    Numeric = false,
+    Finished = true
 })
 
 Tabs.Pets:AddToggle("PetsWebhookEnabled", {
-	Title = "Enable Webhook",
-	Default = false
+    Title = "Enable Webhook",
+    Default = false
 })
 Options.PetsWebhookEnabled:OnChanged(logToggle("PetsWebhookEnabled", "Pets Webhook"))
 
 Tabs.Pets:AddToggle("BuyPetsEnabled", {
-	Title = "Enable Auto Buy Pets",
-	Default = false
+    Title = "Enable Auto Buy Pets",
+    Default = false
 })
 Options.BuyPetsEnabled:OnChanged(logToggle("BuyPetsEnabled", "Auto Buy Pets"))
 
@@ -641,75 +536,75 @@ Tabs.Pets:AddParagraph({ Title = "Auto Equip Pets", Content = "" })
 
 local PriorityPetValues = GetPetNames()
 local PriorityPetsDropdown = Tabs.Pets:AddDropdown("PriorityPets", {
-	Title = "Priority Pets",
-	Values = PriorityPetValues,
-	Multi = true,
-	Default = {}
+    Title = "Priority Pets",
+    Values = PriorityPetValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(PriorityPetsDropdown, PriorityPetValues, "PriorityPets")
 
 local BlacklistedPetValues = GetPetNames()
 local BlacklistedPetsDropdown = Tabs.Pets:AddDropdown("BlacklistedPets", {
-	Title = "Blacklisted Pets",
-	Values = BlacklistedPetValues,
-	Multi = true,
-	Default = {}
+    Title = "Blacklisted Pets",
+    Values = BlacklistedPetValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(BlacklistedPetsDropdown, BlacklistedPetValues, "BlacklistedPets")
 
 Tabs.Pets:AddToggle("EquipPetsEnabled", {
-	Title = "Enable Auto Equip Pets",
-	Default = false
+    Title = "Enable Auto Equip Pets",
+    Default = false
 })
 Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled", "Auto Equip Pets"))
 
 Tabs.Opening:AddParagraph({ Title = "Auto Open Eggs", Content = "" })
 
-local EggsToOpenValues = GetEggNames()
+local EggsToOpenValues = withAll({ "Common Egg", "Legendary Egg", "Rare Egg" })
 local EggsToOpenDropdown = Tabs.Opening:AddDropdown("EggsToOpen", {
-	Title = "Eggs To Open",
-	Values = EggsToOpenValues,
-	Multi = true,
-	Default = {}
+    Title = "Eggs To Open",
+    Values = EggsToOpenValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(EggsToOpenDropdown, EggsToOpenValues, "EggsToOpen")
 
 Tabs.Opening:AddInput("OpenEggsAmount", {
-	Title = "Amount",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Opening:AddToggle("OpenEggsEnabled", {
-	Title = "Enable Auto Open Eggs",
-	Default = false
+    Title = "Enable Auto Open Eggs",
+    Default = false
 })
 Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled", "Auto Open Eggs"))
 
 Tabs.Opening:AddParagraph({ Title = "Auto Open Seed Packs", Content = "" })
 
-local PacksToOpenValues = GetSeedPackNames()
+local PacksToOpenValues = withAll({ "Basic Pack", "Premium Pack" })
 local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
-	Title = "Packs To Open",
-	Values = PacksToOpenValues,
-	Multi = true,
-	Default = {}
+    Title = "Packs To Open",
+    Values = PacksToOpenValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(PacksToOpenDropdown, PacksToOpenValues, "PacksToOpen")
 
 Tabs.Opening:AddInput("OpenPacksAmount", {
-	Title = "Amount",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Opening:AddToggle("OpenPacksEnabled", {
-	Title = "Enable Auto Open Seed Packs",
-	Default = false
+    Title = "Enable Auto Open Seed Packs",
+    Default = false
 })
 Options.OpenPacksEnabled:OnChanged(logToggle("OpenPacksEnabled", "Auto Open Seed Packs"))
 
@@ -717,140 +612,126 @@ Tabs.Opening:AddParagraph({ Title = "Auto Open Crates", Content = "" })
 
 local OpenCrateValues = GetCrateNames()
 local CratesToOpenDropdown = Tabs.Opening:AddDropdown("CratesToOpen", {
-	Title = "Crates To Open",
-	Values = OpenCrateValues,
-	Multi = true,
-	Default = {}
+    Title = "Crates To Open",
+    Values = OpenCrateValues,
+    Multi = true,
+    Default = {}
 })
 HandleAllSelection(CratesToOpenDropdown, OpenCrateValues, "CratesToOpen")
 
 Tabs.Opening:AddInput("OpenCratesAmount", {
-	Title = "Amount",
-	Default = "1",
-	Placeholder = "Amount",
-	Numeric = true,
-	Finished = true
+    Title = "Amount",
+    Default = "1",
+    Placeholder = "Amount",
+    Numeric = true,
+    Finished = true
 })
 
 Tabs.Opening:AddToggle("OpenCratesEnabled", {
-	Title = "Enable Auto Open Crates",
-	Default = false
+    Title = "Enable Auto Open Crates",
+    Default = false
 })
 Options.OpenCratesEnabled:OnChanged(logToggle("OpenCratesEnabled", "Auto Open Crates"))
 
 Tabs.Settings:AddParagraph({ Title = "Configuration", Content = "" })
 
 Tabs.Settings:AddToggle("OptimisationEnabled", {
-	Title = "Enable Performance Optimisation (Set3dRenderingEnabled)",
-	Default = false
+    Title = "Enable Performance Optimisation",
+    Default = false
 })
-Options.OptimisationEnabled:OnChanged(function()
-	local enabled = Options.OptimisationEnabled.Value
-	pcall(function()
-		game:GetService("RunService"):Set3dRenderingEnabled(not enabled)
-	end)
-	debugLog("Performance", enabled and "optimized" or "normal")
-end)
+Options.OptimisationEnabled:OnChanged(logToggle("OptimisationEnabled", "Performance Optimisation"))
 
 Tabs.Settings:AddToggle("DebugConsoleEnabled", {
-	Title = "Debug Console",
-	Default = false
+    Title = "Debug Console",
+    Default = false
 })
 Options.DebugConsoleEnabled:OnChanged(function()
-	getgenv().IdiotHubDebug = Options.DebugConsoleEnabled.Value
-	debugLog("Debug Console", Options.DebugConsoleEnabled.Value and "enabled" or "disabled")
+    getgenv().IdiotHubDebug = Options.DebugConsoleEnabled.Value
+    debugLog("Debug Console", Options.DebugConsoleEnabled.Value and "enabled" or "disabled")
+end)
+
+Tabs.Settings:AddToggle("SilentMode", {
+    Title = "Silent Mode (suppress all prints)",
+    Default = false
+})
+Options.SilentMode:OnChanged(function()
+    getgenv().IdiotHubSilent = Options.SilentMode.Value
+    debugLog("Silent Mode", Options.SilentMode.Value and "enabled" or "disabled")
 end)
 
 Tabs.Settings:AddButton({
-	Title = "Save Config",
-	Callback = function()
-		local config = {}
-		for optName, optObj in pairs(Options) do
-			config[optName] = optObj.Value
-		end
-		local ok = pcall(function()
-			writefile("IdiotHub_config.json", game:GetService("HttpService"):JSONEncode(config))
-		end)
-		if ok then
-			debugLog("Config", "Config saved successfully")
-		else
-			debugWarn("Config", "Failed to save config")
-		end
-	end
+    Title = "Create Config",
+    Callback = function()
+        debugLog("Config", "Create Config pressed")
+    end
 })
 
 Tabs.Settings:AddButton({
-	Title = "Load Config",
-	Callback = function()
-		local ok, data = pcall(function()
-			return readfile("IdiotHub_config.json")
-		end)
-		if ok and data then
-			local config = game:GetService("HttpService"):JSONDecode(data)
-			for optName, optValue in pairs(config) do
-				if Options[optName] then
-					Options[optName]:SetValue(optValue)
-				end
-			end
-			debugLog("Config", "Config loaded successfully")
-		else
-			debugWarn("Config", "Failed to load config")
-		end
-	end
+    Title = "Save Config",
+    Callback = function()
+        debugLog("Config", "Save Config pressed")
+    end
+})
+
+Tabs.Settings:AddButton({
+    Title = "Override Config",
+    Callback = function()
+        debugLog("Config", "Override Config pressed")
+    end
 })
 
 Tabs.Settings:AddParagraph({ Title = "Interface", Content = "" })
 
 Tabs.Settings:AddToggle("AcrylicEnabled", {
-	Title = "Enable Acrylic Background",
-	Default = true
+    Title = "Enable Acrylic Background",
+    Default = true
 })
 Options.AcrylicEnabled:OnChanged(logToggle("AcrylicEnabled", "Acrylic Background"))
 
 Tabs.Settings:AddKeybind("MinimizeBind", {
-	Title = "Minimize Keybind",
-	Mode = "Toggle",
-	Default = "LeftControl"
+    Title = "Minimize Keybind",
+    Mode = "Toggle",
+    Default = "LeftControl"
 })
 
 Tabs.Settings:AddParagraph({ Title = "Webhooks", Content = "" })
 
 Tabs.Settings:AddInput("SettingsWebhookURL", {
-	Title = "Webhook URL",
-	Default = "",
-	Placeholder = "Paste URL",
-	Numeric = false,
-	Finished = true
+    Title = "Webhook URL",
+    Default = "",
+    Placeholder = "Paste URL",
+    Numeric = false,
+    Finished = true
 })
 
 Tabs.Settings:AddButton({
-	Title = "Test Webhook",
-	Callback = function()
-		local url = Options.SettingsWebhookURL.Value
-		if not url or url == "" then
-			debugWarn("Webhook", "Test Webhook pressed with no URL set")
-			return
-		end
+    Title = "Test Webhook",
+    Callback = function()
+        local url = Options.SettingsWebhookURL.Value
+        if not url or url == "" then
+            debugWarn("Webhook", "Test Webhook pressed with no URL set")
+            return
+        end
 
-		local payload = '{"embeds":[{"title":"IdiotHub Test Webhook","description":"This webhook is working correctly.","color":10181046}]}'
+        local payload = '{"embeds":[{"title":"IdiotHub Test Webhook","description":"This webhook is working correctly.","color":10181046}]}'
 
-		local ok, response = pcall(function()
-			return request({
-				Url = url,
-				Method = "POST",
-				Headers = { ["Content-Type"] = "application/json" },
-				Body = payload,
-			})
-		end)
+        local ok, response = pcall(function()
+            return request({
+                Url = url,
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = payload,
+            })
+        end)
 
-		if ok and response and response.StatusCode and response.StatusCode < 300 then
-			debugLog("Webhook", "Test Webhook sent successfully, status", response.StatusCode)
-		elseif ok and response then
-			debugWarn("Webhook", "Test Webhook failed, status", response.StatusCode)
-		else
-			debugWarn("Webhook", "Test Webhook failed", tostring(response))
-		end
-	end
+        if ok and response and response.StatusCode and response.StatusCode < 300 then
+            debugLog("Webhook", "Test Webhook sent successfully, status", response.StatusCode)
+        elseif ok and response then
+            debugWarn("Webhook", "Test Webhook failed, status", response.StatusCode)
+        else
+            debugWarn("Webhook", "Test Webhook failed", tostring(response))
+        end
+    end
 })
 
 local Players = game:GetService("Players")
@@ -872,11 +753,11 @@ local PlayerStateClient = require(ClientModules:WaitForChild("PlayerStateClient"
 local FruitValueCalc = require(SharedModules:WaitForChild("FruitValueCalc"))
 
 local GardenSyncSuccess, GardenSyncResult = pcall(function()
-	return require(Controllers:WaitForChild("GardenSyncController"))
+    return require(Controllers:WaitForChild("GardenSyncController"))
 end)
 local GardenSyncCtrl = GardenSyncSuccess and GardenSyncResult or nil
 if not GardenSyncSuccess then
-	debugWarn("GardenSync", "Failed to load:", GardenSyncResult)
+    debugWarn("GardenSync", "Failed to load:", GardenSyncResult)
 end
 
 local StockValues = ReplicatedStorage:WaitForChild("StockValues")
@@ -889,325 +770,331 @@ local wildPetRef = MapFolder:WaitForChild("WildPetRef")
 local wildPetSpawns = MapFolder:WaitForChild("WildPetSpawns")
 
 local function resolveRemote(path)
-	local node = Networking
-	for part in string.gmatch(path, "[^%.]+") do
-		node = node[part]
-		if not node then return nil end
-	end
-	return node
+    local node = Networking
+    for part in string.gmatch(path, "[^%.]+") do
+        node = node[part]
+        if not node then return nil end
+    end
+    return node
 end
 
 local Remotes = {
-	CollectFruit = resolveRemote("Garden.CollectFruit"),
-	PlantSeed = resolveRemote("Plant.PlantSeed"),
-	SellAll = resolveRemote("NPCS.SellAll"),
-	SellFruit = resolveRemote("NPCS.SellFruit"),
-	SetFruitFavorite = resolveRemote("Backpack.SetFruitFavorite"),
-	PlaceSprinkler = resolveRemote("Place.PlaceSprinkler"),
-	PurchaseSeed = resolveRemote("SeedShop.PurchaseSeed"),
-	PurchaseCrate = resolveRemote("CrateShop.PurchaseCrate"),
-	PurchaseGear = resolveRemote("GearShop.PurchaseGear"),
-	RequestPurchasePetSlot = resolveRemote("Pets.RequestPurchasePetSlot"),
-	RequestUnequip = resolveRemote("Pets.RequestUnequip"),
-	PetEquipped = resolveRemote("Pets.PetEquipped"),
-	PetUnequipped = resolveRemote("Pets.PetUnequipped"),
-	WildPetTame = resolveRemote("Pets.WildPetTame"),
-	WildPetCollected = resolveRemote("Pets.WildPetCollected"),
-	OpenCrate = resolveRemote("Crate.OpenCrate"),
-	OpenSeedPack = resolveRemote("SeedPack.OpenSeedPack"),
-	OpenEgg = resolveRemote("Egg.OpenEgg"),
-	TeleportRequest = resolveRemote("TeleportButton.Request"),
-	ClickPack = resolveRemote("SeedPack.ClickPack"),
+    CollectFruit = resolveRemote("Garden.CollectFruit"),
+    PlantSeed = resolveRemote("Plant.PlantSeed"),
+    SellAll = resolveRemote("NPCS.SellAll"),
+    SellFruit = resolveRemote("NPCS.SellFruit"),
+    SetFruitFavorite = resolveRemote("Backpack.SetFruitFavorite"),
+    PlaceSprinkler = resolveRemote("Place.PlaceSprinkler"),
+    PurchaseSeed = resolveRemote("SeedShop.PurchaseSeed"),
+    PurchaseCrate = resolveRemote("CrateShop.PurchaseCrate"),
+    PurchaseGear = resolveRemote("GearShop.PurchaseGear"),
+    RequestPurchasePetSlot = resolveRemote("Pets.RequestPurchasePetSlot"),
+    RequestUnequip = resolveRemote("Pets.RequestUnequip"),
+    PetEquipped = resolveRemote("Pets.PetEquipped"),
+    PetUnequipped = resolveRemote("Pets.PetUnequipped"),
+    WildPetTame = resolveRemote("Pets.WildPetTame"),
+    WildPetCollected = resolveRemote("Pets.WildPetCollected"),
+    OpenCrate = resolveRemote("Crate.OpenCrate"),
+    OpenSeedPack = resolveRemote("SeedPack.OpenSeedPack"),
+    OpenEgg = resolveRemote("Egg.OpenEgg"),
+    TeleportRequest = resolveRemote("TeleportButton.Request"),
 }
 
 for name, remote in pairs(Remotes) do
-	if not remote then
-		debugWarn("Remotes", name, "failed to resolve")
-	end
+    if not remote then
+        debugWarn("Remotes", name, "failed to resolve")
+    end
 end
 
 local replica = nil
 do
-	local ok = pcall(function()
-		replica = PlayerStateClient:WaitForLocalReplica(30)
-	end)
-	if not ok or not replica then
-		debugWarn("Replica", "Failed to acquire local replica")
-	end
+    local ok = pcall(function()
+        replica = PlayerStateClient:WaitForLocalReplica(30)
+    end)
+    if not ok or not replica then
+        debugWarn("Replica", "Failed to acquire local replica")
+    end
 end
 
 local seedPriceMap = {}
 for _, entry in ipairs(SeedData) do
-	if entry.SeedName and entry.PurchasePrice then
-		seedPriceMap[entry.SeedName] = entry.PurchasePrice
-	end
+    if entry.SeedName and entry.PurchasePrice then
+        seedPriceMap[entry.SeedName] = entry.PurchasePrice
+    end
 end
 
 local gearPriceMap = {}
 for _, entry in ipairs(GearShopData.Data) do
-	if entry.ItemName and entry.Cost then
-		gearPriceMap[entry.ItemName] = entry.Cost
-	end
+    if entry.ItemName and entry.Cost then
+        gearPriceMap[entry.ItemName] = entry.Cost
+    end
 end
 
 local cratePriceCache = {}
 local function getCratePrice(crateName)
-	local cached = cratePriceCache[crateName]
-	if cached ~= nil then
-		return cached ~= false and cached or nil
-	end
-	local entry = CrateData.GetData(crateName)
-	local price = entry and (entry.Cost or entry.Price) or false
-	cratePriceCache[crateName] = price
-	return price ~= false and price or nil
+    local cached = cratePriceCache[crateName]
+    if cached ~= nil then
+        return cached ~= false and cached or nil
+    end
+    local entry = CrateData.GetData(crateName)
+    local price = entry and (entry.Cost or entry.Price) or false
+    cratePriceCache[crateName] = price
+    return price ~= false and price or nil
 end
 
 local function getBalance()
-	return replica and replica.Data and replica.Data.Sheckles or 0
+    return replica and replica.Data and replica.Data.Sheckles or 0
 end
 
 local function formatNumber(n)
-	n = tonumber(n) or 0
-	if n >= 1e9 then return string.format("%.1fB", n / 1e9)
-	elseif n >= 1e6 then return string.format("%.1fM", n / 1e6)
-	elseif n >= 1e3 then return string.format("%.1fK", n / 1e3)
-	else return tostring(math.round(n)) end
+    n = tonumber(n) or 0
+    if n >= 1e9 then return string.format("%.1fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.1fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.1fK", n / 1e3)
+    else return tostring(math.round(n)) end
 end
 
 local function getStockValue(itemsFolder, itemName)
-	if not itemsFolder then return 0 end
-	local child = itemsFolder:FindFirstChild(itemName)
-	return child and child.Value or 0
+    if not itemsFolder then return 0 end
+    local child = itemsFolder:FindFirstChild(itemName)
+    return child and child.Value or 0
 end
 
 local function equipAndActivateTool(tool)
-	for _, conn in ipairs(getconnections(tool.Activated)) do conn:Fire() end
+    for _, conn in ipairs(getconnections(tool.Activated)) do conn:Fire() end
 end
 
 local function calcOneIn(spawnChance)
-	if not spawnChance or spawnChance <= 0 then return 0 end
-	return math.round(1 / (spawnChance / 100))
+    if not spawnChance or spawnChance <= 0 then return 0 end
+    return math.round(1 / (spawnChance / 100))
 end
 
 local function parseWildPetName(instanceName)
-	local petName, guid = instanceName:match("^WildPet_(.+)_WildPet_(.+)$")
-	if not petName or petName == "" or not guid or guid == "" then return nil, nil end
-	return petName, guid
+    local petName, guid = instanceName:match("^WildPet_(.+)_WildPet_(.+)$")
+    if not petName or petName == "" or not guid or guid == "" then return nil, nil end
+    return petName, guid
 end
 
 local function playerAlive()
-	local char = LocalPlayer.Character
-	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-	return humanoid ~= nil and humanoid.Health > 0
+    local char = LocalPlayer.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil and humanoid.Health > 0
 end
 
 local function selectedSet(dropdownOptions)
-	local value = dropdownOptions.Value
-	if value["All"] then
-		return nil
-	end
-	return value
+    local value = dropdownOptions.Value
+    if value["All"] then
+        return nil
+    end
+    return value
+end
+
+local function isSelected(set, name)
+    if set == nil or next(set) == nil then return true end
+    return set[name] == true
 end
 
 getgenv().tweenSpeed = getgenv().tweenSpeed or 30
 getgenv().tweening = getgenv().tweening or false
 getgenv().stuffPositions = getgenv().stuffPositions or {
-	["Seeds"] = CFrame.new(264, 147, -145),
-	["Sell"] = CFrame.new(270, 147, -127),
+    ["Seeds"] = CFrame.new(264, 147, -145),
+    ["Sell"] = CFrame.new(270, 147, -127),
 }
 
+local TELEPORT_THRESHOLD_SQ = 16
+
 local function xzDistanceSq(a, b)
-	local dx = a.X - b.X
-	local dz = a.Z - b.Z
-	return dx * dx + dz * dz
+    local dx = a.X - b.X
+    local dz = a.Z - b.Z
+    return dx * dx + dz * dz
 end
 
 local function computePlotCenter()
-	local plotId = LocalPlayer:GetAttribute("PlotId")
-	if not plotId then return nil end
-	local gardens = workspace:FindFirstChild("Gardens")
-	local plot = gardens and gardens:FindFirstChild("Plot" .. plotId)
-	if not plot then return nil end
-	local spawnPoint = plot:FindFirstChild("SpawnPoint")
-	if spawnPoint then return spawnPoint.Position end
-	local prim = plot:FindFirstChildWhichIsA("BasePart") or plot.PrimaryPart
-	return prim and prim.Position
+    local plotId = LocalPlayer:GetAttribute("PlotId")
+    if not plotId then return nil end
+    local gardens = workspace:FindFirstChild("Gardens")
+    local plot = gardens and gardens:FindFirstChild("Plot" .. plotId)
+    if not plot then return nil end
+    local spawnPoint = plot:FindFirstChild("SpawnPoint")
+    if spawnPoint then return spawnPoint.Position end
+    local prim = plot:FindFirstChildWhichIsA("BasePart") or plot.PrimaryPart
+    return prim and prim.Position
 end
 
 if not getgenv().stuffPositions["Garden"] then
-	local pos = computePlotCenter()
-	if pos then
-		getgenv().stuffPositions["Garden"] = CFrame.new(pos)
-	end
+    local pos = computePlotCenter()
+    if pos then
+        getgenv().stuffPositions["Garden"] = CFrame.new(pos)
+    end
 end
 
 local function getBottomRectClosestPoint(part, point)
-	local size = part.Size
-	local cf = part.CFrame * CFrame.new(0, -size.Y / 2, 0)
-	local localPoint = cf:PointToObjectSpace(point)
-	local halfX, halfZ = size.X / 2, size.Z / 2
-	local clampedX = math.clamp(localPoint.X, -halfX, halfX)
-	local clampedZ = math.clamp(localPoint.Z, -halfZ, halfZ)
-	return cf:PointToWorldSpace(Vector3.new(clampedX, 0, clampedZ))
+    local size = part.Size
+    local cf = part.CFrame * CFrame.new(0, -size.Y / 2, 0)
+    local localPoint = cf:PointToObjectSpace(point)
+    local halfX, halfZ = size.X / 2, size.Z / 2
+    local clampedX = math.clamp(localPoint.X, -halfX, halfX)
+    local clampedZ = math.clamp(localPoint.Z, -halfZ, halfZ)
+    return cf:PointToWorldSpace(Vector3.new(clampedX, 0, clampedZ))
 end
 
 local function pointInBottomRectXZ(part, point)
-	local size = part.Size
-	local cf = part.CFrame * CFrame.new(0, -size.Y / 2, 0)
-	local localPoint = cf:PointToObjectSpace(point)
-	return math.abs(localPoint.X) <= size.X / 2 and math.abs(localPoint.Z) <= size.Z / 2
+    local size = part.Size
+    local cf = part.CFrame * CFrame.new(0, -size.Y / 2, 0)
+    local localPoint = cf:PointToObjectSpace(point)
+    return math.abs(localPoint.X) <= size.X / 2 and math.abs(localPoint.Z) <= size.Z / 2
 end
 
 local function moveTowards(from, to, maxDistance)
-	local offset = to - from
-	local distance = offset.Magnitude
-	if distance <= maxDistance then return to end
-	return from + offset.Unit * maxDistance
+    local offset = to - from
+    local distance = offset.Magnitude
+    if distance <= maxDistance then return to end
+    return from + offset.Unit * maxDistance
 end
 
 local function tweenTo(hrp, targetPos)
-	local remainingDistance = (hrp.Position - targetPos).Magnitude
-	local TWEEN_SPEED = getgenv().tweenSpeed
-	if remainingDistance <= TWEEN_SPEED then
-		hrp.CFrame = CFrame.new(targetPos)
-		return
-	end
-	getgenv().tweening = true
-	local tween = TweenService:Create(
-		hrp,
-		TweenInfo.new(remainingDistance / TWEEN_SPEED, Enum.EasingStyle.Linear),
-		{ CFrame = CFrame.new(targetPos) }
-	)
-	tween:Play()
-	tween.Completed:Wait()
-	getgenv().tweening = false
+    local remainingDistance = (hrp.Position - targetPos).Magnitude
+    local TWEEN_SPEED = getgenv().tweenSpeed
+    if remainingDistance <= TWEEN_SPEED then
+        hrp.CFrame = CFrame.new(targetPos)
+        return
+    end
+    getgenv().tweening = true
+    local tween = TweenService:Create(
+        hrp,
+        TweenInfo.new(remainingDistance / TWEEN_SPEED, Enum.EasingStyle.Linear),
+        { CFrame = CFrame.new(targetPos) }
+    )
+    tween:Play()
+    tween.Completed:Wait()
+    getgenv().tweening = false
 end
 
 local canTeleportDirect = false
 local function teleport(target, teleportDirect)
-	if teleportDirect == nil then
-		teleportDirect = canTeleportDirect
-	end
-	if getgenv().tweening then return false end
+    if teleportDirect == nil then
+        teleportDirect = canTeleportDirect
+    end
+    if getgenv().tweening then return false end
 
-	local character = LocalPlayer.Character
-	local hrp = character and character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return false end
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
 
-	if not teleportDirect then
-		if typeof(target) == "string" then
-			local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
-			if not cf then return false end
-			if xzDistanceSq(hrp.Position, cf.Position) > TELEPORT_THRESHOLD_SQ then
-				Remotes.TeleportRequest:Fire(target)
-			end
-			return true
-		end
+    if not teleportDirect then
+        if typeof(target) == "string" then
+            local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
+            if not cf then return false end
+            if xzDistanceSq(hrp.Position, cf.Position) > TELEPORT_THRESHOLD_SQ then
+                Remotes.TeleportRequest:Fire(target)
+            end
+            return true
+        end
 
-		local targetPos = typeof(target) == "CFrame" and target.Position or target
+        local targetPos = typeof(target) == "CFrame" and target.Position or target
 
-		if xzDistanceSq(hrp.Position, targetPos) > TELEPORT_THRESHOLD_SQ then
-			local bestDistance = (hrp.Position - targetPos).Magnitude
-			local bestTeleport
+        if xzDistanceSq(hrp.Position, targetPos) > TELEPORT_THRESHOLD_SQ then
+            local bestDistance = (hrp.Position - targetPos).Magnitude
+            local bestTeleport
 
-			local teleportsFolder = workspace:FindFirstChild("Teleports")
-			if teleportsFolder then
-				for _, thing in ipairs(teleportsFolder:GetChildren()) do
-					local pos
-					if thing:IsA("BasePart") then
-						pos = thing.Position
-					else
-						local part = thing:FindFirstChildWhichIsA("BasePart")
-						pos = part and part.Position
-					end
-					if pos then
-						local distance = (pos - targetPos).Magnitude
-						if distance < bestDistance then
-							bestDistance = distance
-							bestTeleport = thing
-						end
-					end
-				end
-			end
+            local teleportsFolder = workspace:FindFirstChild("Teleports")
+            if teleportsFolder then
+                for _, thing in ipairs(teleportsFolder:GetChildren()) do
+                    local pos
+                    if thing:IsA("BasePart") then
+                        pos = thing.Position
+                    else
+                        local part = thing:FindFirstChildWhichIsA("BasePart")
+                        pos = part and part.Position
+                    end
+                    if pos then
+                        local distance = (pos - targetPos).Magnitude
+                        if distance < bestDistance then
+                            bestDistance = distance
+                            bestTeleport = thing
+                        end
+                    end
+                end
+            end
 
-			if bestTeleport then
-				Remotes.TeleportRequest:Fire(bestTeleport)
-				repeat
-					character = LocalPlayer.Character
-					hrp = character and character:FindFirstChild("HumanoidRootPart")
-					if not hrp then task.wait() end
-				until hrp
-			end
-		end
+            if bestTeleport then
+                Remotes.TeleportRequest:Fire(bestTeleport)
+                repeat
+                    character = LocalPlayer.Character
+                    hrp = character and character:FindFirstChild("HumanoidRootPart")
+                    if not hrp then task.wait() end
+                until hrp
+            end
+        end
 
-		tweenTo(hrp, targetPos)
-		return true
-	end
+        tweenTo(hrp, targetPos)
+        return true
+    end
 
-	local targetPos
-	if typeof(target) == "string" then
-		local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
-		if not cf then return false end
-		targetPos = cf.Position
-	elseif typeof(target) == "CFrame" then
-		targetPos = target.Position
-	else
-		targetPos = target
-	end
+    local targetPos
+    if typeof(target) == "string" then
+        local cf = getgenv().stuffPositions and getgenv().stuffPositions[target]
+        if not cf then return false end
+        targetPos = cf.Position
+    elseif typeof(target) == "CFrame" then
+        targetPos = target.Position
+    else
+        targetPos = target
+    end
 
-	local safezonePart = MapFolder:WaitForChild("SafeZones"):WaitForChild("Part")
-	local gardenCF = getgenv().stuffPositions and getgenv().stuffPositions["Garden"]
+    local safezonePart = MapFolder:WaitForChild("SafeZones"):WaitForChild("Part")
+    local gardenCF = getgenv().stuffPositions and getgenv().stuffPositions["Garden"]
 
-	local safezoneEdge = getBottomRectClosestPoint(safezonePart, targetPos)
-	local safezoneDistance = (safezoneEdge - targetPos).Magnitude
-	local gardenDistance = gardenCF and (gardenCF.Position - targetPos).Magnitude or math.huge
-	local currentDistance = (hrp.Position - targetPos).Magnitude
+    local safezoneEdge = getBottomRectClosestPoint(safezonePart, targetPos)
+    local safezoneDistance = (safezoneEdge - targetPos).Magnitude
+    local gardenDistance = gardenCF and (gardenCF.Position - targetPos).Magnitude or math.huge
+    local currentDistance = (hrp.Position - targetPos).Magnitude
 
-	if safezoneDistance <= gardenDistance and safezoneDistance <= currentDistance then
-		Remotes.TeleportRequest:Fire("Seeds")
-		task.wait(0.2)
-		character = LocalPlayer.Character
-		hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp then return false end
-		hrp.CFrame = CFrame.new(safezoneEdge)
-		task.wait(0.2)
-		local stepPos = moveTowards(hrp.Position, targetPos, 70)
-		hrp.CFrame = CFrame.new(stepPos)
-		task.wait()
-		tweenTo(hrp, targetPos)
-		return true
-	end
+    if safezoneDistance <= gardenDistance and safezoneDistance <= currentDistance then
+        Remotes.TeleportRequest:Fire("Seeds")
+        task.wait(0.2)
+        character = LocalPlayer.Character
+        hrp = character and character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+        hrp.CFrame = CFrame.new(safezoneEdge)
+        task.wait(0.2)
+        local stepPos = moveTowards(hrp.Position, targetPos, 70)
+        hrp.CFrame = CFrame.new(stepPos)
+        task.wait()
+        tweenTo(hrp, targetPos)
+        return true
+    end
 
-	if gardenDistance <= currentDistance then
-		Remotes.TeleportRequest:Fire("Garden")
-		task.wait(0.2)
-		character = LocalPlayer.Character
-		hrp = character and character:FindFirstChild("HumanoidRootPart")
-		if not hrp then return false end
-		local stepPos = moveTowards(hrp.Position, targetPos, 70)
-		hrp.CFrame = CFrame.new(stepPos)
-		task.wait()
-		tweenTo(hrp, targetPos)
-		return true
-	end
+    if gardenDistance <= currentDistance then
+        Remotes.TeleportRequest:Fire("Garden")
+        task.wait(0.2)
+        character = LocalPlayer.Character
+        hrp = character and character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+        local stepPos = moveTowards(hrp.Position, targetPos, 70)
+        hrp.CFrame = CFrame.new(stepPos)
+        task.wait()
+        tweenTo(hrp, targetPos)
+        return true
+    end
 
-	local closeToGarden = gardenCF and (hrp.Position - gardenCF.Position).Magnitude <= 3
-	local insideSafezone = pointInBottomRectXZ(safezonePart, hrp.Position)
-	if not closeToGarden and not insideSafezone then
-		tweenTo(hrp, targetPos)
-	end
-	return true
+    local closeToGarden = gardenCF and (hrp.Position - gardenCF.Position).Magnitude <= 3
+    local insideSafezone = pointInBottomRectXZ(safezonePart, hrp.Position)
+    if not closeToGarden and not insideSafezone then
+        tweenTo(hrp, targetPos)
+    end
+    return true
 end
 
 local function matchesList(set, value)
-	return isSelected(set, value or "Normal")
+    return isSelected(set, value or "Normal")
 end
 
-local function checkFruitCollect(mutationSet, instantMutated, mutation, age, maxAge)
-	local eligible = matchesList(mutationSet, mutation)
-	if not eligible then return false end
-	local instant = mutation and instantMutated
-	return instant or (maxAge > 0 and age >= maxAge)
+local function checkFruitCollect(mutationSet, variantSet, instantMutated, mutation, variant, age, maxAge)
+    local eligible = matchesList(mutationSet, mutation) and matchesList(variantSet, variant)
+    if not eligible then return false end
+    local instant = mutation and instantMutated
+    return instant or (maxAge > 0 and age >= maxAge)
 end
 
 local _fruitCountNonFav = 0
@@ -1216,136 +1103,140 @@ local _sprinklerInventory = {}
 local _bpToolConns = {}
 
 local function _isFruit(t)
-	return t:GetAttribute("Fruit") ~= nil and t:GetAttribute("FruitName") ~= nil
+    return t:GetAttribute("Fruit") ~= nil and t:GetAttribute("FruitName") ~= nil
 end
 
 local function _isSeed(t)
-	return t:IsA("Tool") and t:GetAttribute("SeedTool") ~= nil
+    return t:IsA("Tool") and t:GetAttribute("SeedTool") ~= nil
 end
 
 local function _isSprinkler(t)
-	return t:IsA("Tool") and t:GetAttribute("Sprinkler") ~= nil
+    return t:IsA("Tool") and t:GetAttribute("Sprinkler") ~= nil
 end
 
 local function _listAdd(map, key, tool)
-	local list = map[key]
-	if not list then list = {}; map[key] = list end
-	list[#list + 1] = tool
+    local list = map[key]
+    if not list then list = {}; map[key] = list end
+    list[#list + 1] = tool
 end
 
 local function _listRemove(map, key, tool)
-	local list = map[key]
-	if not list then return end
-	local i = table.find(list, tool)
-	if i then
-		list[i] = list[#list]
-		list[#list] = nil
-	end
-	if #list == 0 then map[key] = nil end
+    local list = map[key]
+    if not list then return end
+    local i = table.find(list, tool)
+    if i then
+        list[i] = list[#list]
+        list[#list] = nil
+    end
+    if #list == 0 then map[key] = nil end
 end
 
 local function _onToolAdded(tool)
-	if _isFruit(tool) then
-		if tool:GetAttribute("IsFavorite") ~= true then
-			_fruitCountNonFav += 1
-		end
-	end
-	if _isSeed(tool) then
-		_listAdd(_seedInventory, tool:GetAttribute("SeedTool"), tool)
-	end
-	if _isSprinkler(tool) then
-		_listAdd(_sprinklerInventory, tool:GetAttribute("Sprinkler"), tool)
-	end
+    if _isFruit(tool) then
+        if tool:GetAttribute("IsFavorite") ~= true then
+            _fruitCountNonFav += 1
+        end
+    end
+    if _isSeed(tool) then
+        _listAdd(_seedInventory, tool:GetAttribute("SeedTool"), tool)
+    end
+    if _isSprinkler(tool) then
+        _listAdd(_sprinklerInventory, tool:GetAttribute("Sprinkler"), tool)
+    end
 end
 
 local function _onToolRemoved(tool)
-	if _isFruit(tool) then
-		if tool:GetAttribute("IsFavorite") ~= true then
-			_fruitCountNonFav = math.max(0, _fruitCountNonFav - 1)
-		end
-	end
-	if _isSeed(tool) then
-		_listRemove(_seedInventory, tool:GetAttribute("SeedTool"), tool)
-	end
-	if _isSprinkler(tool) then
-		_listRemove(_sprinklerInventory, tool:GetAttribute("Sprinkler"), tool)
-	end
+    if _isFruit(tool) then
+        if tool:GetAttribute("IsFavorite") ~= true then
+            _fruitCountNonFav = math.max(0, _fruitCountNonFav - 1)
+        end
+    end
+    if _isSeed(tool) then
+        _listRemove(_seedInventory, tool:GetAttribute("SeedTool"), tool)
+    end
+    if _isSprinkler(tool) then
+        _listRemove(_sprinklerInventory, tool:GetAttribute("Sprinkler"), tool)
+    end
 end
 
 local function _setupBackpackTracking(bp)
-	for _, c in ipairs(_bpToolConns) do c:Disconnect() end
-	_bpToolConns = {}
-	_fruitCountNonFav = 0
-	_seedInventory, _sprinklerInventory = {}, {}
-	for _, t in ipairs(bp:GetChildren()) do _onToolAdded(t) end
-	_bpToolConns[1] = bp.ChildAdded:Connect(_onToolAdded)
-	_bpToolConns[2] = bp.ChildRemoved:Connect(_onToolRemoved)
+    for _, c in ipairs(_bpToolConns) do c:Disconnect() end
+    _bpToolConns = {}
+    _fruitCountNonFav = 0
+    _seedInventory, _sprinklerInventory = {}, {}
+    for _, t in ipairs(bp:GetChildren()) do _onToolAdded(t) end
+    _bpToolConns[1] = bp.ChildAdded:Connect(_onToolAdded)
+    _bpToolConns[2] = bp.ChildRemoved:Connect(_onToolRemoved)
 end
 
 _setupBackpackTracking(Backpack)
 LocalPlayer.ChildAdded:Connect(function(c)
-	if c:IsA("Backpack") then _setupBackpackTracking(c) end
+    if c:IsA("Backpack") then _setupBackpackTracking(c) end
 end)
 
 local function getFruitCount(ignoreFavs)
-	return ignoreFavs and _fruitCountNonFav or 0
+    return ignoreFavs and _fruitCountNonFav or 0
 end
+
+local DENSITY_CELL = 5
+local OPT_TTL = 8
 
 local _densGrid = {}
 local _occGrid = {}
 local _optOcc = {}
 
 local function _dk(x, z)
-	return math.floor(x / DENSITY_CELL) .. "," .. math.floor(z / DENSITY_CELL)
+    return math.floor(x / DENSITY_CELL) .. "," .. math.floor(z / DENSITY_CELL)
 end
 
 local function _ok(x, z)
-	return math.floor(x + 0.5) .. "," .. math.floor(z + 0.5)
+    return math.floor(x + 0.5) .. "," .. math.floor(z + 0.5)
 end
 
 local function _densAdd(pos)
-	local k = _dk(pos.X, pos.Z)
-	_densGrid[k] = (_densGrid[k] or 0) + 1
+    local k = _dk(pos.X, pos.Z)
+    _densGrid[k] = (_densGrid[k] or 0) + 1
 end
 
 local function densityAt(pos)
-	local cx = math.floor(pos.X / DENSITY_CELL)
-	local cz = math.floor(pos.Z / DENSITY_CELL)
-	local s = 0
-	for dx = -1, 1 do
-		for dz = -1, 1 do
-			s += _densGrid[(cx + dx) .. "," .. (cz + dz)] or 0
-		end
-	end
-	return s
+    local cx = math.floor(pos.X / DENSITY_CELL)
+    local cz = math.floor(pos.Z / DENSITY_CELL)
+    local s = 0
+    for dx = -1, 1 do
+        for dz = -1, 1 do
+            s += _densGrid[(cx + dx) .. "," .. (cz + dz)] or 0
+        end
+    end
+    return s
 end
 
 local function _occMark(pos) _occGrid[_ok(pos.X, pos.Z)] = true end
 
 local function _optMark(pos)
-	_optOcc[_ok(pos.X, pos.Z)] = os.clock() + OPT_TTL
+    _optOcc[_ok(pos.X, pos.Z)] = os.clock() + OPT_TTL
 end
 
 local function isOccupied(pos)
-	local cx = math.floor(pos.X + 0.5)
-	local cz = math.floor(pos.Z + 0.5)
-	local now = os.clock()
-	for dx = -1, 1 do
-		for dz = -1, 1 do
-			local k = (cx + dx) .. "," .. (cz + dz)
-			if _occGrid[k] then return true end
-			local exp = _optOcc[k]
-			if exp then
-				if exp > now then return true else _optOcc[k] = nil end
-			end
-		end
-	end
-	return false
+    local cx = math.floor(pos.X + 0.5)
+    local cz = math.floor(pos.Z + 0.5)
+    local now = os.clock()
+    for dx = -1, 1 do
+        for dz = -1, 1 do
+            local k = (cx + dx) .. "," .. (cz + dz)
+            if _occGrid[k] then return true end
+            local exp = _optOcc[k]
+            if exp then
+                if exp > now then return true else _optOcc[k] = nil end
+            end
+        end
+    end
+    return false
 end
 
 local _spawnCF = nil
 local _plantWorldPositions = {}
 
+local GARDEN_TTL = 2
 local _gardenDirty = true
 local _lastGardenPoll = 0
 local _plantCounts = {}
@@ -1353,81 +1244,82 @@ local _harvestTargets = {}
 local _candidDirty = true
 
 local function _plantWorldPos(p)
-	local gp = p.Positions
-	if not gp or not gp.PosX or not gp.PosZ then return nil end
-	local v = Vector3.new(gp.PosX, gp.PosY or 0, gp.PosZ)
-	if _spawnCF then return _spawnCF:PointToWorldSpace(v) end
-	return v
+    local gp = p.Positions
+    if not gp or not gp.PosX or not gp.PosZ then return nil end
+    local v = Vector3.new(gp.PosX, gp.PosY or 0, gp.PosZ)
+    if _spawnCF then return _spawnCF:PointToWorldSpace(v) end
+    return v
 end
 
 local function _rebuildGardenCache()
-	if not GardenSyncCtrl then return end
-	local garden = GardenSyncCtrl:GetGarden(userId)
-	if not garden then return end
+    if not GardenSyncCtrl then return end
+    local garden = GardenSyncCtrl:GetGarden(userId)
+    if not garden then return end
 
-	_plantCounts = {}
-	_harvestTargets = {}
-	_densGrid = {}
-	_occGrid = {}
-	_plantWorldPositions = {}
+    _plantCounts = {}
+    _harvestTargets = {}
+    _densGrid = {}
+    _occGrid = {}
+    _plantWorldPositions = {}
 
-	local doHarvest = Options.HarvestEnabled.Value
-	local mutationSet = selectedSet(Options.HarvestMutations)
-	local instantMutated = Options.HarvestInstantMutated.Value
+    local doHarvest = Options.HarvestEnabled.Value
+    local mutationSet = selectedSet(Options.HarvestMutations)
+    local variantSet = selectedSet(Options.HarvestVariants)
+    local instantMutated = Options.HarvestInstantMutated.Value
 
-	for plantId, p in pairs(garden) do
-		local name = p.PlantName
-		if name then
-			_plantCounts[name] = (_plantCounts[name] or 0) + 1
-		end
+    for plantId, p in pairs(garden) do
+        local name = p.PlantName
+        if name then
+            _plantCounts[name] = (_plantCounts[name] or 0) + 1
+        end
 
-		local wp = _plantWorldPos(p)
-		if wp then
-			_densAdd(wp)
-			_occMark(wp)
-			_plantWorldPositions[#_plantWorldPositions + 1] = wp
-		end
+        local wp = _plantWorldPos(p)
+        if wp then
+            _densAdd(wp)
+            _occMark(wp)
+            _plantWorldPositions[#_plantWorldPositions + 1] = wp
+        end
 
-		if doHarvest then
-			if p.Fruits then
-				for fruitId, f in pairs(p.Fruits) do
-					if checkFruitCollect(mutationSet, instantMutated, f.Mutation, f.Age or 0, f.MaxAge or 0) then
-						local ht = _harvestTargets
-						ht[#ht + 1] = { plantId = plantId, fruitId = fruitId }
-					end
-				end
-			else
-				if checkFruitCollect(mutationSet, instantMutated, p.Mutation, p.Age or 0, p.MaxAge or 0) then
-					local ht = _harvestTargets
-					ht[#ht + 1] = { plantId = plantId, fruitId = "" }
-				end
-			end
-		end
-	end
+        if doHarvest then
+            if p.Fruits then
+                for fruitId, f in pairs(p.Fruits) do
+                    if checkFruitCollect(mutationSet, variantSet, instantMutated, f.Mutation, f.Variant, f.Age or 0, f.MaxAge or 0) then
+                        local ht = _harvestTargets
+                        ht[#ht + 1] = { plantId = plantId, fruitId = fruitId }
+                    end
+                end
+            else
+                if checkFruitCollect(mutationSet, variantSet, instantMutated, p.Mutation, p.Variant, p.Age or 0, p.MaxAge or 0) then
+                    local ht = _harvestTargets
+                    ht[#ht + 1] = { plantId = plantId, fruitId = "" }
+                end
+            end
+        end
+    end
 
-	_candidDirty = true
-	_gardenDirty = false
+    _candidDirty = true
+    _gardenDirty = false
 end
 
 local function tickGarden()
-	local now = os.clock()
-	if _gardenDirty or now - _lastGardenPoll >= GARDEN_TTL then
-		_lastGardenPoll = now
-		_rebuildGardenCache()
-	end
+    local now = os.clock()
+    if _gardenDirty or now - _lastGardenPoll >= GARDEN_TTL then
+        _lastGardenPoll = now
+        _rebuildGardenCache()
+    end
 end
 
 local function markGardenDirty() _gardenDirty = true end
 
 local _plantAreaParams = nil
 local function _buildPlantAreaParams()
-	_plantAreaParams = RaycastParams.new()
-	_plantAreaParams.FilterType = Enum.RaycastFilterType.Include
-	_plantAreaParams.FilterDescendantsInstances = CollectionService:GetTagged("PlantArea")
+    _plantAreaParams = RaycastParams.new()
+    _plantAreaParams.FilterType = Enum.RaycastFilterType.Include
+    _plantAreaParams.FilterDescendantsInstances = CollectionService:GetTagged("PlantArea")
 end
 
 local function _ensureStaticParams()
-	if not _plantAreaParams then _buildPlantAreaParams() end
+    if not _plantAreaParams then _buildPlantAreaParams() end
 end
 
 local _candidates = {}
@@ -1438,382 +1330,384 @@ local _plotCenter = nil
 local _perimeter = nil
 
 local function _collectPlantAreas(plot)
-	local out = {}
-	for _, part in ipairs(CollectionService:GetTagged("PlantArea")) do
-		if part:IsA("BasePart") and part:IsDescendantOf(plot) then
-			out[#out + 1] = part
-		end
-	end
-	return out
+    local out = {}
+    for _, part in ipairs(CollectionService:GetTagged("PlantArea")) do
+        if part:IsA("BasePart") and part:IsDescendantOf(plot) then
+            out[#out + 1] = part
+        end
+    end
+    return out
 end
 
 local function _computePerimeter(plantAreas)
-	local minX, minZ = math.huge, math.huge
-	local maxX, maxZ = -math.huge, -math.huge
-	local sumY, nY = 0, 0
-	for _, part in ipairs(plantAreas) do
-		local p, s = part.Position, part.Size
-		local hx, hz = s.X * 0.5, s.Z * 0.5
-		if p.X - hx < minX then minX = p.X - hx end
-		if p.X + hx > maxX then maxX = p.X + hx end
-		if p.Z - hz < minZ then minZ = p.Z - hz end
-		if p.Z + hz > maxZ then maxZ = p.Z + hz end
-		sumY += p.Y; nY += 1
-	end
-	if nY == 0 then return nil end
-	local y = sumY / nY
-	return {
-		minX = minX, maxX = maxX, minZ = minZ, maxZ = maxZ, y = y,
-		center = Vector3.new((minX + maxX) * 0.5, y, (minZ + maxZ) * 0.5),
-	}
+    local minX, minZ = math.huge, math.huge
+    local maxX, maxZ = -math.huge, -math.huge
+    local sumY, nY = 0, 0
+    for _, part in ipairs(plantAreas) do
+        local p, s = part.Position, part.Size
+        local hx, hz = s.X * 0.5, s.Z * 0.5
+        if p.X - hx < minX then minX = p.X - hx end
+        if p.X + hx > maxX then maxX = p.X + hx end
+        if p.Z - hz < minZ then minZ = p.Z - hz end
+        if p.Z + hz > maxZ then maxZ = p.Z + hz end
+        sumY += p.Y; nY += 1
+    end
+    if nY == 0 then return nil end
+    local y = sumY / nY
+    return {
+        minX = minX, maxX = maxX, minZ = minZ, maxZ = maxZ, y = y,
+        center = Vector3.new((minX + maxX) * 0.5, y, (minZ + maxZ) * 0.5),
+    }
 end
 
 local function _inPerimeter(pos)
-	local pr = _perimeter
-	if not pr then return true end
-	return pos.X >= pr.minX and pos.X <= pr.maxX
-		and pos.Z >= pr.minZ and pos.Z <= pr.maxZ
+    local pr = _perimeter
+    if not pr then return true end
+    return pos.X >= pr.minX and pos.X <= pr.maxX
+        and pos.Z >= pr.minZ and pos.Z <= pr.maxZ
 end
 
 local function _precomputeCandidates(plot, plantAreas)
-	_candidates = {}
-	_candidDirty = true
-	if #plantAreas == 0 then return end
-	for _, area in ipairs(plantAreas) do
-		local ap = area.Position
-		local as = area.Size
-		local stX = math.max(1, math.floor(as.X / 2))
-		local stZ = math.max(1, math.floor(as.Z / 2))
-		for ix = 0, stX do
-			for iz = 0, stZ do
-				local ox = ((ix / stX) - 0.5) * as.X * 0.85
-				local oz = ((iz / stZ) - 0.5) * as.Z * 0.85
-				local org = Vector3.new(ap.X + ox, ap.Y + 50, ap.Z + oz)
-				local hit = workspace:Raycast(org, Vector3.new(0, -100, 0), _plantAreaParams)
-				if hit and hit.Instance:IsDescendantOf(plot) then
-					_candidates[#_candidates + 1] = hit.Position
-				end
-			end
-		end
-	end
+    _candidates = {}
+    _candidDirty = true
+    if #plantAreas == 0 then return end
+    for _, area in ipairs(plantAreas) do
+        local ap = area.Position
+        local as = area.Size
+        local stX = math.max(1, math.floor(as.X / 2))
+        local stZ = math.max(1, math.floor(as.Z / 2))
+        for ix = 0, stX do
+            for iz = 0, stZ do
+                local ox = ((ix / stX) - 0.5) * as.X * 0.85
+                local oz = ((iz / stZ) - 0.5) * as.Z * 0.85
+                local org = Vector3.new(ap.X + ox, ap.Y + 50, ap.Z + oz)
+                local hit = workspace:Raycast(org, Vector3.new(0, -100, 0), _plantAreaParams)
+                if hit and hit.Instance:IsDescendantOf(plot) then
+                    _candidates[#_candidates + 1] = hit.Position
+                end
+            end
+        end
+    end
 end
 
 local function _precomputeSprinklerCands(plantAreas)
-	local STEP = 5
-	local out = {}
-	for _, part in ipairs(plantAreas) do
-		local sz, cf = part.Size, part.CFrame
-		local hX, hY, hZ = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
-		local xSt = math.floor(sz.X / STEP)
-		local zSt = math.floor(sz.Z / STEP)
-		for xi = 0, xSt do
-			for zi = 0, zSt do
-				out[#out + 1] = cf:PointToWorldSpace(
-					Vector3.new(-hX + xi * STEP, hY, -hZ + zi * STEP)
-				)
-			end
-		end
-	end
-	return out
+    local STEP = 5
+    local out = {}
+    for _, part in ipairs(plantAreas) do
+        local sz, cf = part.Size, part.CFrame
+        local hX, hY, hZ = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+        local xSt = math.floor(sz.X / STEP)
+        local zSt = math.floor(sz.Z / STEP)
+        for xi = 0, xSt do
+            for zi = 0, zSt do
+                out[#out + 1] = cf:PointToWorldSpace(
+                    Vector3.new(-hX + xi * STEP, hY, -hZ + zi * STEP)
+                )
+            end
+        end
+    end
+    return out
 end
 
 local function getSortedCandidates()
-	if not _candidDirty then return _candidSorted end
-	local n = #_candidates
-	local scored = table.create(n)
-	for i = 1, n do
-		scored[i] = { idx = i, score = densityAt(_candidates[i]) }
-	end
-	table.sort(scored, function(a, b) return a.score > b.score end)
-	_candidSorted = scored
-	_candidDirty = false
-	return scored
+    if not _candidDirty then return _candidSorted end
+    local n = #_candidates
+    local scored = table.create(n)
+    for i = 1, n do
+        scored[i] = { idx = i, score = densityAt(_candidates[i]) }
+    end
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    _candidSorted = scored
+    _candidDirty = false
+    return scored
 end
 
 local function _trySetup(plotId)
-	if _cachedPlotId == plotId and _plotCenter then return true end
-	local gardens = workspace:FindFirstChild("Gardens")
-	local plot = gardens and gardens:FindFirstChild("Plot" .. tostring(plotId))
-	if not plot then return false end
+    if _cachedPlotId == plotId and _plotCenter then return true end
+    local gardens = workspace:FindFirstChild("Gardens")
+    local plot = gardens and gardens:FindFirstChild("Plot" .. tostring(plotId))
+    if not plot then return false end
 
-	_ensureStaticParams()
-	local sp = plot:FindFirstChild("SpawnPoint")
-	_spawnCF = sp and sp.CFrame or nil
+    _ensureStaticParams()
+    local sp = plot:FindFirstChild("SpawnPoint")
+    _spawnCF = sp and sp.CFrame or nil
 
-	local plantAreas = _collectPlantAreas(plot)
-	_perimeter = _computePerimeter(plantAreas)
-	_plotCenter = (_perimeter and _perimeter.center) or plot:GetPivot().Position
-	_precomputeCandidates(plot, plantAreas)
-	_sprinklerCands = _precomputeSprinklerCands(plantAreas)
+    local plantAreas = _collectPlantAreas(plot)
+    _perimeter = _computePerimeter(plantAreas)
+    _plotCenter = (_perimeter and _perimeter.center) or plot:GetPivot().Position
+    _precomputeCandidates(plot, plantAreas)
+    _sprinklerCands = _precomputeSprinklerCands(plantAreas)
 
-	_cachedPlotId = plotId
-	markGardenDirty()
-	return _plotCenter ~= nil
+    _cachedPlotId = plotId
+    markGardenDirty()
+    return _plotCenter ~= nil
 end
 
 task.spawn(function()
-	while true do
-		task.wait(0.5)
-		if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
-			if getFruitCount(true) < 100 then
-				tickGarden()
-				if #_harvestTargets > 0 and Remotes.CollectFruit then
-					teleport("Garden")
-					local fire = Remotes.CollectFruit.Fire
-					local fruitCount = getFruitCount(true)
-					local collected = 0
-					for i = 1, #_harvestTargets do
-						local t = _harvestTargets[i]
-						fire(Remotes.CollectFruit, t.plantId, t.fruitId)
-						fruitCount += 1
-						collected += 1
-						if fruitCount >= 90 then break end
-					end
-					if collected > 0 then
-						markGardenDirty()
-						debugLog("Auto Harvest", "Collected", collected, "fruit")
-					end
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(0.5)
+        if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
+            if getFruitCount(true) < 100 then
+                tickGarden()
+                if #_harvestTargets > 0 and Remotes.CollectFruit then
+                    teleport("Garden")
+                    local fire = Remotes.CollectFruit.Fire
+                    local fruitCount = getFruitCount(true)
+                    local collected = 0
+                    for i = 1, #_harvestTargets do
+                        local t = _harvestTargets[i]
+                        fire(Remotes.CollectFruit, t.plantId, t.fruitId)
+                        fruitCount += 1
+                        collected += 1
+                        if fruitCount >= 90 then break end
+                    end
+                    if collected > 0 then
+                        markGardenDirty()
+                        debugLog("Auto Harvest", "Collected", collected, "fruit")
+                    end
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(2)
-		if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
-			local plotId = LocalPlayer:GetAttribute("PlotId")
-			if plotId and _trySetup(plotId) then
-				tickGarden()
+    while true do
+        task.wait(2)
+        if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
+            local plotId = LocalPlayer:GetAttribute("PlotId")
+            if plotId and _trySetup(plotId) then
+                tickGarden()
 
-				local seedSet = selectedSet(Options.PlantSeeds)
+                local seedSet = selectedSet(Options.PlantSeeds)
 
-				local seedTools = {}
-				for name, toolList in pairs(_seedInventory) do
-					if isSelected(seedSet, name) then
-						for _, tool in ipairs(toolList) do
-							local stack = tool:GetAttribute("Count") or 1
-							if stack > 0 then
-								seedTools[#seedTools + 1] = { tool = tool, amount = stack }
-							end
-						end
-					end
-				end
+                local seedTools = {}
+                for name, toolList in pairs(_seedInventory) do
+                    if isSelected(seedSet, name) then
+                        for _, tool in ipairs(toolList) do
+                            local stack = tool:GetAttribute("Count") or 1
+                            if stack > 0 then
+                                seedTools[#seedTools + 1] = { tool = tool, amount = stack }
+                            end
+                        end
+                    end
+                end
 
-				if #_candidates > 0 and #seedTools > 0 then
-					local char = LocalPlayer.Character
-					local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-					if humanoid then
-						local sorted = getSortedCandidates()
-						local sortIdx = 1
+                if #_candidates > 0 and #seedTools > 0 then
+                    local char = LocalPlayer.Character
+                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                    if humanoid then
+                        local sorted = getSortedCandidates()
+                        local sortIdx = 1
 
-						local function nextSpot()
-							while sortIdx <= #sorted do
-								local pos = _candidates[sorted[sortIdx].idx]
-								sortIdx += 1
-								if _inPerimeter(pos) and not isOccupied(pos) then
-									return pos
-								end
-							end
-							return nil
-						end
+                        local function nextSpot()
+                            while sortIdx <= #sorted do
+                                local pos = _candidates[sorted[sortIdx].idx]
+                                sortIdx += 1
+                                if _inPerimeter(pos) and not isOccupied(pos) then
+                                    return pos
+                                end
+                            end
+                            return nil
+                        end
 
-						local function ensureEquipped(tool)
-							if not tool or not tool.Parent then return false end
-							local held = char:FindFirstChildWhichIsA("Tool")
-							if held == tool then return true end
-							humanoid:EquipTool(tool)
-							local deadline = os.clock() + 0.3
-							repeat
-								task.wait()
-								if not tool.Parent then return false end
-								held = char:FindFirstChildWhichIsA("Tool")
-								if held == tool then return true end
-							until os.clock() > deadline
-							return false
-						end
+                        local function ensureEquipped(tool)
+                            if not tool or not tool.Parent then return false end
+                            local held = char:FindFirstChildWhichIsA("Tool")
+                            if held == tool then return true end
+                            humanoid:EquipTool(tool)
+                            local deadline = os.clock() + 0.3
+                            repeat
+                                task.wait()
+                                if not tool.Parent then return false end
+                                held = char:FindFirstChildWhichIsA("Tool")
+                                if held == tool then return true end
+                            until os.clock() > deadline
+                            return false
+                        end
 
-						local placed = 0
-						local outOfSpots = false
-						for _, entry in ipairs(seedTools) do
-							if outOfSpots then break end
-							local seedTool = entry.tool
-							local count = entry.amount
-							while count > 0 and seedTool.Parent do
-								local spot = nextSpot()
-								if not spot then
-									outOfSpots = true
-									break
-								end
-								if not ensureEquipped(seedTool) then break end
-								local seedName = seedTool:GetAttribute("SeedTool")
-								if not seedName then break end
+                        local placed = 0
+                        local outOfSpots = false
+                        for _, entry in ipairs(seedTools) do
+                            if outOfSpots then break end
+                            local seedTool = entry.tool
+                            local count = entry.amount
+                            while count > 0 and seedTool.Parent do
+                                local spot = nextSpot()
+                                if not spot then
+                                    outOfSpots = true
+                                    break
+                                end
+                                if not ensureEquipped(seedTool) then break end
+                                local seedName = seedTool:GetAttribute("SeedTool")
+                                if not seedName then break end
 
-								teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
-								task.wait(SETTLE_TIME)
-								Remotes.PlantSeed:Fire(spot, seedName, seedTool)
+                                teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
+                                task.wait(SETTLE_TIME)
+                                Remotes.PlantSeed:Fire(spot, seedName, seedTool)
 
-								_occMark(spot)
-								_optMark(spot)
-								_densAdd(spot)
-								_candidDirty = true
-								placed += 1
-								count -= 1
-							end
-						end
+                                _occMark(spot)
+                                _optMark(spot)
+                                _densAdd(spot)
+                                _candidDirty = true
+                                placed += 1
+                                count -= 1
+                            end
+                        end
 
-						humanoid:UnequipTools()
-						if placed > 0 then
-							markGardenDirty()
-							debugLog("Auto Plant", "Planted", placed, "seeds")
-						end
-						if outOfSpots then
-							debugLog("Auto Plant", "No more available spots")
-						end
-					end
-				elseif #seedTools == 0 then
-					debugLog("Auto Plant", "No selected seeds left in inventory")
-				end
-			end
-		end
-	end
+                        humanoid:UnequipTools()
+                        if placed > 0 then
+                            markGardenDirty()
+                            debugLog("Auto Plant", "Planted", placed, "seeds")
+                        end
+                        if outOfSpots then
+                            debugLog("Auto Plant", "No more available spots")
+                        end
+                    end
+                elseif #seedTools == 0 then
+                    debugLog("Auto Plant", "No selected seeds left in inventory")
+                end
+            end
+        end
+    end
 end)
 
 local RadiusMap = {}
 do
-	for _, entry in pairs(SprinklerData) do
-		if entry.SprinklerName then
-			RadiusMap[entry.SprinklerName] = entry.Radius
-		else
-			for _, inner in pairs(entry) do
-				if inner.SprinklerName then
-					RadiusMap[inner.SprinklerName] = inner.Radius
-				end
-			end
-		end
-	end
+    local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
+    for _, entry in pairs(SprinklerData) do
+        if entry.SprinklerName then
+            RadiusMap[entry.SprinklerName] = entry.Radius
+        else
+            for _, inner in pairs(entry) do
+                if inner.SprinklerName then
+                    RadiusMap[inner.SprinklerName] = inner.Radius
+                end
+            end
+        end
+    end
 end
 
 local function buildSprinklerState(synced)
-	local counts, occupied = {}, {}
-	for _, s in pairs(synced) do
-		local name = s.SprinklerName
-		counts[name] = (counts[name] or 0) + 1
-		local pos = s.Positions
-		if pos and RadiusMap[name] and _spawnCF then
-			local r = RadiusMap[name]
-			occupied[#occupied + 1] = {
-				Pos = _spawnCF:PointToWorldSpace(Vector3.new(pos.PosX, pos.PosY, pos.PosZ)),
-				R2 = r * r,
-				Name = name,
-			}
-		end
-	end
-	return counts, occupied
+    local counts, occupied = {}, {}
+    for _, s in pairs(synced) do
+        local name = s.SprinklerName
+        counts[name] = (counts[name] or 0) + 1
+        local pos = s.Positions
+        if pos and RadiusMap[name] and _spawnCF then
+            local r = RadiusMap[name]
+            occupied[#occupied + 1] = {
+                Pos = _spawnCF:PointToWorldSpace(Vector3.new(pos.PosX, pos.PosY, pos.PosZ)),
+                R2 = r * r,
+                Name = name,
+            }
+        end
+    end
+    return counts, occupied
 end
 
 local function isCovered(occupied, pos, name)
-	local px, pz = pos.X, pos.Z
-	for _, o in ipairs(occupied) do
-		if o.Name == name then
-			local dx = o.Pos.X - px
-			local dz = o.Pos.Z - pz
-			if dx * dx + dz * dz < o.R2 then return true end
-		end
-	end
-	return false
+    local px, pz = pos.X, pos.Z
+    for _, o in ipairs(occupied) do
+        if o.Name == name then
+            local dx = o.Pos.X - px
+            local dz = o.Pos.Z - pz
+            if dx * dx + dz * dz < o.R2 then return true end
+        end
+    end
+    return false
 end
 
 local function scoreSprinklerCands()
-	local plants = _plantWorldPositions
-	local n = #_sprinklerCands
-	local out = table.create(n)
-	for i = 1, n do
-		local wp = _sprinklerCands[i]
-		local wx, wz = wp.X, wp.Z
-		local d = 0
-		for _, pp in ipairs(plants) do
-			local dx = wx - pp.X
-			local dz = wz - pp.Z
-			if dx * dx + dz * dz <= SPRINKLER_DETECT_RANGE_SQ then d += 1 end
-		end
-		out[i] = { Position = wp, Density = d }
-	end
-	table.sort(out, function(a, b) return a.Density > b.Density end)
-	return out
+    local plants = _plantWorldPositions
+    local n = #_sprinklerCands
+    local out = table.create(n)
+    local DR2 = 15 * 15
+    for i = 1, n do
+        local wp = _sprinklerCands[i]
+        local wx, wz = wp.X, wp.Z
+        local d = 0
+        for _, pp in ipairs(plants) do
+            local dx = wx - pp.X
+            local dz = wz - pp.Z
+            if dx * dx + dz * dz <= DR2 then d += 1 end
+        end
+        out[i] = { Position = wp, Density = d }
+    end
+    table.sort(out, function(a, b) return a.Density > b.Density end)
+    return out
 end
 
 task.spawn(function()
-	while true do
-		task.wait(1)
-		if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
-			local plotId = LocalPlayer:GetAttribute("PlotId")
-			if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
-				tickGarden()
+    while true do
+        task.wait(1)
+        if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
+            local plotId = LocalPlayer:GetAttribute("PlotId")
+            if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
+                tickGarden()
 
-				local sprinklerSet = selectedSet(Options.SprinklersToUse)
-				local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
-				local existingCounts, occupied = buildSprinklerState(synced)
+                local sprinklerSet = selectedSet(Options.SprinklersToUse)
+                local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
+                local existingCounts, occupied = buildSprinklerState(synced)
 
-				local sortedTypes = {}
-				for sName, tools in pairs(_sprinklerInventory) do
-					if isSelected(sprinklerSet, sName) then
-						local toPlace = #tools - (existingCounts[sName] or 0)
-						toPlace = math.min(toPlace, #tools)
-						if toPlace > 0 then
-							sortedTypes[#sortedTypes + 1] = {
-								Name = sName, ToPlace = toPlace,
-								Radius = RadiusMap[sName] or 0, Tools = tools,
-							}
-						end
-					end
-				end
+                local sortedTypes = {}
+                for sName, tools in pairs(_sprinklerInventory) do
+                    if isSelected(sprinklerSet, sName) then
+                        local toPlace = #tools - (existingCounts[sName] or 0)
+                        toPlace = math.min(toPlace, #tools)
+                        if toPlace > 0 then
+                            sortedTypes[#sortedTypes + 1] = {
+                                Name = sName, ToPlace = toPlace,
+                                Radius = RadiusMap[sName] or 0, Tools = tools,
+                            }
+                        end
+                    end
+                end
 
-				if #sortedTypes > 0 then
-					table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
-					teleport("Garden")
+                if #sortedTypes > 0 then
+                    table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
+                    teleport("Garden")
 
-					local candidates = scoreSprinklerCands()
-					local char = LocalPlayer.Character
-					local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                    local candidates = scoreSprinklerCands()
+                    local char = LocalPlayer.Character
+                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
 
-					if #candidates > 0 and humanoid then
-						local totalPlaced = 0
-						for _, st in ipairs(sortedTypes) do
-							local placed = 0
-							local tools = st.Tools
-							local name = st.Name
-							local r = st.Radius
+                    if #candidates > 0 and humanoid then
+                        local totalPlaced = 0
+                        for _, st in ipairs(sortedTypes) do
+                            local placed = 0
+                            local tools = st.Tools
+                            local name = st.Name
+                            local r = st.Radius
 
-							for _, cand in ipairs(candidates) do
-								if placed >= st.ToPlace then break end
-								if not isCovered(occupied, cand.Position, name) then
-									local tool = tools[placed + 1]
-									if tool then
-										if tool.Parent ~= char then
-											humanoid:EquipTool(tool)
-										end
-										teleport(cand.Position + Vector3.new(0, 2, 0), false)
-										task.wait(SETTLE_TIME)
-										Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
-										occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
-										placed += 1
-									end
-								end
-							end
-							totalPlaced += placed
-						end
-						humanoid:UnequipTools()
-						if totalPlaced > 0 then
-							markGardenDirty()
-							debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
-						end
-					end
-				end
-			end
-		end
-	end
+                            for _, cand in ipairs(candidates) do
+                                if placed >= st.ToPlace then break end
+                                if not isCovered(occupied, cand.Position, name) then
+                                    local tool = tools[placed + 1]
+                                    if tool then
+                                        if tool.Parent ~= char then
+                                            humanoid:EquipTool(tool)
+                                        end
+                                        teleport(cand.Position + Vector3.new(0, 2, 0), false)
+                                        task.wait(SETTLE_TIME)
+                                        Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
+                                        occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
+                                        placed += 1
+                                    end
+                                end
+                            end
+                            totalPlaced += placed
+                        end
+                        humanoid:UnequipTools()
+                        if totalPlaced > 0 then
+                            markGardenDirty()
+                            debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
+                        end
+                    end
+                end
+            end
+        end
+    end
 end)
 
 local _fruitReg = {}
@@ -1825,661 +1719,659 @@ local _sellSet = {}
 local SELL_MISS = {}
 
 local function _getCachedSellValue(tool)
-	local v = _sellValueCache[tool]
-	if v ~= nil then
-		return v ~= SELL_MISS and v or nil
-	end
-	local r = _fruitReg[tool]
-	if not r then return nil end
-	local ok, computed = pcall(FruitValueCalc, r.name, tool:GetAttribute("SizeMultiplier") or 1, r.mutation, LocalPlayer, tool:GetAttribute("DecayAlpha"))
-	if not ok then
-		debugWarn("SellValue", "FruitValueCalc failed for", r.name, "-", computed)
-		computed = nil
-	end
-	_sellValueCache[tool] = computed ~= nil and computed or SELL_MISS
-	return computed
+    local v = _sellValueCache[tool]
+    if v ~= nil then
+        return v ~= SELL_MISS and v or nil
+    end
+    local r = _fruitReg[tool]
+    if not r then return nil end
+    local ok, computed = pcall(FruitValueCalc, r.name, tool:GetAttribute("SizeMultiplier") or 1, r.mutation, LocalPlayer, tool:GetAttribute("DecayAlpha"))
+    if not ok then
+        debugWarn("SellValue", "FruitValueCalc failed for", r.name, "-", computed)
+        computed = nil
+    end
+    _sellValueCache[tool] = computed ~= nil and computed or SELL_MISS
+    return computed
 end
 
 local function _markFavDirty(tool, rec)
-	if not rec.isFavorite then
-		_favQueue[tool] = true
-	end
+    if not rec.isFavorite then
+        _favQueue[tool] = true
+    end
 end
 
 local function _registerFruit(tool)
-	if _fruitReg[tool] then return end
+    if _fruitReg[tool] then return end
 
-	local isFav = tool:GetAttribute("IsFavorite") == true
-	local rec = {
-		id = tool:GetAttribute("Id"),
-		name = tool:GetAttribute("FruitName"),
-		mutation = tool:GetAttribute("Mutation"),
-		variant = tool:GetAttribute("Variant"),
-		weight = tool:GetAttribute("Weight"),
-		isFavorite = isFav,
-	}
-	_fruitReg[tool] = rec
+    local isFav = tool:GetAttribute("IsFavorite") == true
+    local rec = {
+        id = tool:GetAttribute("Id"),
+        name = tool:GetAttribute("FruitName"),
+        mutation = tool:GetAttribute("Mutation"),
+        variant = tool:GetAttribute("Variant"),
+        weight = tool:GetAttribute("Weight"),
+        isFavorite = isFav,
+    }
+    _fruitReg[tool] = rec
 
-	if not isFav then
-		_favQueue[tool] = true
-		_sellSet[tool] = true
-	end
+    if not isFav then
+        _favQueue[tool] = true
+        _sellSet[tool] = true
+    end
 
-	local conns = table.create(6)
-	_fruitConns[tool] = conns
+    local conns = table.create(6)
+    _fruitConns[tool] = conns
 
-	conns[1] = tool:GetAttributeChangedSignal("IsFavorite"):Connect(function()
-		local fav = tool:GetAttribute("IsFavorite") == true
-		rec.isFavorite = fav
-		if fav then
-			_favQueue[tool] = nil
-			_favQueueSwap[tool] = nil
-			_sellSet[tool] = nil
-		else
-			_favQueue[tool] = true
-			_sellSet[tool] = true
-		end
-	end)
+    conns[1] = tool:GetAttributeChangedSignal("IsFavorite"):Connect(function()
+        local fav = tool:GetAttribute("IsFavorite") == true
+        rec.isFavorite = fav
+        if fav then
+            _favQueue[tool] = nil
+            _favQueueSwap[tool] = nil
+            _sellSet[tool] = nil
+        else
+            _favQueue[tool] = true
+            _sellSet[tool] = true
+        end
+    end)
 
-	conns[2] = tool:GetAttributeChangedSignal("Mutation"):Connect(function()
-		rec.mutation = tool:GetAttribute("Mutation")
-		_sellValueCache[tool] = nil
-		_markFavDirty(tool, rec)
-	end)
+    conns[2] = tool:GetAttributeChangedSignal("Mutation"):Connect(function()
+        rec.mutation = tool:GetAttribute("Mutation")
+        _sellValueCache[tool] = nil
+        _markFavDirty(tool, rec)
+    end)
 
-	conns[6] = tool:GetAttributeChangedSignal("Variant"):Connect(function()
-		rec.variant = tool:GetAttribute("Variant")
-		_markFavDirty(tool, rec)
-	end)
+    conns[6] = tool:GetAttributeChangedSignal("Variant"):Connect(function()
+        rec.variant = tool:GetAttribute("Variant")
+        _markFavDirty(tool, rec)
+    end)
 
-	conns[3] = tool:GetAttributeChangedSignal("Weight"):Connect(function()
-		rec.weight = tool:GetAttribute("Weight")
-		_markFavDirty(tool, rec)
-	end)
+    conns[3] = tool:GetAttributeChangedSignal("Weight"):Connect(function()
+        rec.weight = tool:GetAttribute("Weight")
+        _markFavDirty(tool, rec)
+    end)
 
-	conns[4] = tool:GetAttributeChangedSignal("SizeMultiplier"):Connect(function()
-		_sellValueCache[tool] = nil
-		_markFavDirty(tool, rec)
-	end)
+    conns[4] = tool:GetAttributeChangedSignal("SizeMultiplier"):Connect(function()
+        _sellValueCache[tool] = nil
+        _markFavDirty(tool, rec)
+    end)
 
-	conns[5] = tool:GetAttributeChangedSignal("DecayAlpha"):Connect(function()
-		_sellValueCache[tool] = nil
-		_markFavDirty(tool, rec)
-	end)
+    conns[5] = tool:GetAttributeChangedSignal("DecayAlpha"):Connect(function()
+        _sellValueCache[tool] = nil
+        _markFavDirty(tool, rec)
+    end)
 end
 
 local function _unregisterFruit(tool)
-	local conns = _fruitConns[tool]
-	if not conns then return end
-	for _, c in ipairs(conns) do c:Disconnect() end
-	_fruitConns[tool] = nil
-	_fruitReg[tool] = nil
-	_favQueue[tool] = nil
-	_favQueueSwap[tool] = nil
-	_sellSet[tool] = nil
-	_sellValueCache[tool] = nil
+    local conns = _fruitConns[tool]
+    if not conns then return end
+    for _, c in ipairs(conns) do c:Disconnect() end
+    _fruitConns[tool] = nil
+    _fruitReg[tool] = nil
+    _favQueue[tool] = nil
+    _favQueueSwap[tool] = nil
+    _sellSet[tool] = nil
+    _sellValueCache[tool] = nil
 end
 
 local _fruitBpConns = {}
 local function _setupFruitTracking(bp)
-	for _, c in ipairs(_fruitBpConns) do c:Disconnect() end
-	_fruitBpConns = {}
+    for _, c in ipairs(_fruitBpConns) do c:Disconnect() end
+    _fruitBpConns = {}
 
-	for _, conns in pairs(_fruitConns) do
-		for _, c in ipairs(conns) do c:Disconnect() end
-	end
-	table.clear(_fruitReg)
-	table.clear(_fruitConns)
-	table.clear(_sellValueCache)
-	table.clear(_favQueue)
-	table.clear(_favQueueSwap)
-	table.clear(_sellSet)
+    for _, conns in pairs(_fruitConns) do
+        for _, c in ipairs(conns) do c:Disconnect() end
+    end
+    table.clear(_fruitReg)
+    table.clear(_fruitConns)
+    table.clear(_sellValueCache)
+    table.clear(_favQueue)
+    table.clear(_favQueueSwap)
+    table.clear(_sellSet)
 
-	for _, tool in ipairs(bp:GetChildren()) do
-		if tool:GetAttribute("Fruit") ~= nil and tool:GetAttribute("FruitName") ~= nil then
-			_registerFruit(tool)
-		end
-	end
+    for _, tool in ipairs(bp:GetChildren()) do
+        if tool:GetAttribute("Fruit") ~= nil and tool:GetAttribute("FruitName") ~= nil then
+            _registerFruit(tool)
+        end
+    end
 
-	_fruitBpConns[1] = bp.ChildAdded:Connect(function(tool)
-		if tool:GetAttribute("Fruit") ~= nil and tool:GetAttribute("FruitName") ~= nil then
-			_registerFruit(tool)
-		end
-	end)
-	_fruitBpConns[2] = bp.ChildRemoved:Connect(_unregisterFruit)
+    _fruitBpConns[1] = bp.ChildAdded:Connect(function(tool)
+        if tool:GetAttribute("Fruit") ~= nil and tool:GetAttribute("FruitName") ~= nil then
+            _registerFruit(tool)
+        end
+    end)
+    _fruitBpConns[2] = bp.ChildRemoved:Connect(_unregisterFruit)
 end
 
 _setupFruitTracking(Backpack)
 LocalPlayer.ChildAdded:Connect(function(c)
-	if c:IsA("Backpack") then _setupFruitTracking(c) end
+    if c:IsA("Backpack") then _setupFruitTracking(c) end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(0.9)
-		if Options.FavoriteEnabled.Value and playerAlive() and next(_favQueue) ~= nil then
-			local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, Variant = true, SellPrice = true }
-			local minS = tonumber(Options.FavoriteMinPrice.Value) or 0
-			local mutSet = selectedSet(Options.FavoriteMutations)
-			local remote = Remotes.SetFruitFavorite
+    while true do
+        task.wait(0.9)
+        if Options.FavoriteEnabled.Value and playerAlive() and next(_favQueue) ~= nil then
+            local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, Variant = true, SellPrice = true }
+            local minS = tonumber(Options.FavoriteMinPrice.Value) or 0
+            local mutSet = selectedSet(Options.FavoriteMutations)
+            local remote = Remotes.SetFruitFavorite
 
-			local processing = _favQueue
-			_favQueue = _favQueueSwap
-			_favQueueSwap = processing
+            local processing = _favQueue
+            _favQueue = _favQueueSwap
+            _favQueueSwap = processing
 
-			local favorited = 0
-			for tool in pairs(processing) do
-				local rec = _fruitReg[tool]
-				if rec and not rec.isFavorite then
-					local shouldFav = false
+            local favorited = 0
+            for tool in pairs(processing) do
+                local rec = _fruitReg[tool]
+                if rec and not rec.isFavorite then
+                    local shouldFav = false
 
-					if checks["Mutation"] then
-						local mut = rec.mutation
-						if mut and isSelected(mutSet, mut) then shouldFav = true end
-					end
-					if not shouldFav and checks["Variant"] then
-						local variant = rec.variant
-						if variant and variant ~= "Normal" then shouldFav = true end
-					end
-					if not shouldFav and checks["Sell Price"] then
-						local sp = _getCachedSellValue(tool)
-						if sp and sp >= minS then shouldFav = true end
-					end
+                    if checks["Mutation"] then
+                        local mut = rec.mutation
+                        if mut and isSelected(mutSet, mut) then shouldFav = true end
+                    end
+                    if not shouldFav and checks["Variant"] then
+                        local variant = rec.variant
+                        if variant and variant ~= "Normal" then shouldFav = true end
+                    end
+                    if not shouldFav and checks["Sell Price"] then
+                        local sp = _getCachedSellValue(tool)
+                        if sp and sp >= minS then shouldFav = true end
+                    end
 
-					if shouldFav then
-						rec.isFavorite = true
-						tool:SetAttribute("IsFavorite", true)
-						if remote then remote:Fire(rec.id, true) end
-						favorited += 1
-					end
-				end
-			end
+                    if shouldFav then
+                        rec.isFavorite = true
+                        tool:SetAttribute("IsFavorite", true)
+                        if remote then remote:Fire(rec.id, true) end
+                        favorited += 1
+                    end
+                end
+            end
 
-			table.clear(processing)
-			if favorited > 0 then
-				debugLog("Auto Favorite", "Favorited", favorited, "fruit")
-			end
-		end
-	end
+            table.clear(processing)
+            if favorited > 0 then
+                debugLog("Auto Favorite", "Favorited", favorited, "fruit")
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(5)
-		if Options.SellEnabled.Value and playerAlive() and next(_sellSet) ~= nil then
-			local mode = Options.SellMode.Value
+    while true do
+        task.wait(5)
+        if Options.SellEnabled.Value and playerAlive() and next(_sellSet) ~= nil then
+            local mode = Options.SellMode.Value
 
-			if mode == "Sell All" then
-				if Remotes.SellAll then
-					Remotes.SellAll:Fire()
-					debugLog("Auto Sell", "Sell All fired")
-					task.wait(tonumber(Options.SellDelay.Value) or 0.9)
-				end
-			else
-				local wanted = selectedSet(Options.SellFruits)
-				local sellFruit = Remotes.SellFruit
-				if sellFruit then
-					local sold = 0
-					for tool in pairs(_sellSet) do
-						local rec = _fruitReg[tool]
-						if rec and isSelected(wanted, rec.name) then
-							sellFruit:Fire(rec.id)
-							sold += 1
-						end
-					end
-					if sold > 0 then
-						debugLog("Auto Sell", "Sold", sold, "fruit")
-					end
-				end
-				task.wait(tonumber(Options.SellDelay.Value) or 0.9)
-			end
-		end
-	end
+            if mode == "Sell All" then
+                if Remotes.SellAll then
+                    Remotes.SellAll:Fire()
+                    debugLog("Auto Sell", "Sell All fired")
+                    task.wait(tonumber(Options.SellDelay.Value) or 0.9)
+                end
+            else
+                local wanted = selectedSet(Options.SellFruits)
+                local sellFruit = Remotes.SellFruit
+                if sellFruit then
+                    local sold = 0
+                    for tool in pairs(_sellSet) do
+                        local rec = _fruitReg[tool]
+                        if rec and isSelected(wanted, rec.name) then
+                            sellFruit:Fire(rec.id)
+                            sold += 1
+                        end
+                    end
+                    if sold > 0 then
+                        debugLog("Auto Sell", "Sold", sold, "fruit")
+                    end
+                end
+                task.wait(tonumber(Options.SellDelay.Value) or 0.9)
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(10)
-		if Options.BuySeedsEnabled.Value then
-			local seedSet = selectedSet(Options.SeedsToBuy)
-			local amount = tonumber(Options.AmountPerSeed.Value) or 1
-			for seedName, price in pairs(seedPriceMap) do
-				if isSelected(seedSet, seedName) then
-					local stock = getStockValue(SeedShopItems, seedName)
-					if stock > 0 then
-						local toBuy = math.min(amount, stock)
-						for i = 1, toBuy do
-							if getBalance() < price then break end
-							Remotes.PurchaseSeed:Fire(seedName)
-							task.wait()
-						end
-					end
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(10)
+        if Options.BuySeedsEnabled.Value then
+            local seedSet = selectedSet(Options.SeedsToBuy)
+            local amount = tonumber(Options.AmountPerSeed.Value) or 1
+            for seedName, price in pairs(seedPriceMap) do
+                if isSelected(seedSet, seedName) then
+                    local stock = getStockValue(SeedShopItems, seedName)
+                    if stock > 0 then
+                        local toBuy = math.min(amount, stock)
+                        for i = 1, toBuy do
+                            if getBalance() < price then break end
+                            Remotes.PurchaseSeed:Fire(seedName)
+                            task.wait()
+                        end
+                    end
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(10)
-		if Options.BuyGearsEnabled.Value then
-			local gearSet = selectedSet(Options.GearsToBuy)
-			local amount = tonumber(Options.AmountPerGear.Value) or 1
-			for gearName, price in pairs(gearPriceMap) do
-				if isSelected(gearSet, gearName) then
-					local stock = getStockValue(GearShopItems, gearName)
-					if stock > 0 then
-						local toBuy = math.min(amount, stock)
-						for i = 1, toBuy do
-							if getBalance() < price then break end
-							Remotes.PurchaseGear:Fire(gearName)
-							task.wait()
-						end
-					end
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(10)
+        if Options.BuyGearsEnabled.Value then
+            local gearSet = selectedSet(Options.GearsToBuy)
+            local amount = tonumber(Options.AmountPerGear.Value) or 1
+            for gearName, price in pairs(gearPriceMap) do
+                if isSelected(gearSet, gearName) then
+                    local stock = getStockValue(GearShopItems, gearName)
+                    if stock > 0 then
+                        local toBuy = math.min(amount, stock)
+                        for i = 1, toBuy do
+                            if getBalance() < price then break end
+                            Remotes.PurchaseGear:Fire(gearName)
+                            task.wait()
+                        end
+                    end
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(10)
-		if Options.BuyCratesEnabled.Value then
-			local crateSet = selectedSet(Options.CratesToBuy)
-			local amount = tonumber(Options.AmountPerCrate.Value) or 1
-			for _, crate in ipairs(CrateData.GetAllCrates()) do
-				local crateName = type(crate) == "table" and crate.Name or crate
-				if isSelected(crateSet, crateName) then
-					local price = getCratePrice(crateName)
-					if price then
-						local stock = getStockValue(CrateShopItems, crateName)
-						if stock > 0 then
-							local toBuy = math.min(amount, stock)
-							for i = 1, toBuy do
-								if getBalance() < price then break end
-								Remotes.PurchaseCrate:Fire(crateName)
-								task.wait()
-							end
-						end
-					end
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(10)
+        if Options.BuyCratesEnabled.Value then
+            local crateSet = selectedSet(Options.CratesToBuy)
+            local amount = tonumber(Options.AmountPerCrate.Value) or 1
+            for _, crate in ipairs(CrateData.GetAllCrates()) do
+                local crateName = type(crate) == "table" and crate.Name or crate
+                if isSelected(crateSet, crateName) then
+                    local price = getCratePrice(crateName)
+                    if price then
+                        local stock = getStockValue(CrateShopItems, crateName)
+                        if stock > 0 then
+                            local toBuy = math.min(amount, stock)
+                            for i = 1, toBuy do
+                                if getBalance() < price then break end
+                                Remotes.PurchaseCrate:Fire(crateName)
+                                task.wait()
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(5)
-		if Options.BuySlotsEnabled.Value then
-			local maxSlots = tonumber(Options.MaxSlots.Value) or 6
-			local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-			if type(currentSlots) ~= "number" or currentSlots <= 0 then
-				currentSlots = PetSlotPrices.BaseMax
-			end
-			currentSlots = math.floor(currentSlots)
-			while currentSlots < maxSlots do
-				local price = PetSlotPrices.GetNextPrice(currentSlots)
-				if not price then break end
-				if getBalance() < price then break end
-				Remotes.RequestPurchasePetSlot:Fire()
-				task.wait(0.5)
-				local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
-				if type(newSlots) == "number" and newSlots > currentSlots then
-					currentSlots = math.floor(newSlots)
-				else
-					break
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(5)
+        if Options.BuySlotsEnabled.Value then
+            local maxSlots = tonumber(Options.MaxSlots.Value) or 6
+            local currentSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+            if type(currentSlots) ~= "number" or currentSlots <= 0 then
+                currentSlots = PetSlotPrices.BaseMax
+            end
+            currentSlots = math.floor(currentSlots)
+            while currentSlots < maxSlots do
+                local price = PetSlotPrices.GetNextPrice(currentSlots)
+                if not price then break end
+                if getBalance() < price then break end
+                Remotes.RequestPurchasePetSlot:Fire()
+                task.wait(0.5)
+                local newSlots = LocalPlayer:GetAttribute("MaxEquippedPets")
+                if type(newSlots) == "number" and newSlots > currentSlots then
+                    currentSlots = math.floor(newSlots)
+                else
+                    break
+                end
+            end
+        end
+    end
 end)
 
 local function drainOpen(remote, name, wantCount)
-	local opened = 0
-	while opened < wantCount do
-		local ok, res = pcall(function() return remote:Fire(name) end)
-		if not ok then break end
-		if type(res) == "table" and res.Success then
-			opened += 1
-			task.wait(0.2)
-		else
-			break
-		end
-	end
-	return opened
+    local opened = 0
+    while opened < wantCount do
+        local ok, res = pcall(function() return remote:Fire(name) end)
+        if not ok then break end
+        if type(res) == "table" and res.Success then
+            opened += 1
+            task.wait(0.2)
+        else
+            break
+        end
+    end
+    return opened
 end
 
 task.spawn(function()
-	while true do
-		task.wait(3)
-		if Options.OpenEggsEnabled.Value and playerAlive() then
-			local eggSet = selectedSet(Options.EggsToOpen)
-			local amount = tonumber(Options.OpenEggsAmount.Value) or 1
-			local eggNames = GetEggNames()
-			for _, eggName in ipairs(eggNames) do
-				if eggName ~= "All" and isSelected(eggSet, eggName) then
-					drainOpen(Remotes.OpenEgg, eggName, amount)
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(3)
+        if Options.OpenEggsEnabled.Value and playerAlive() then
+            local eggSet = selectedSet(Options.EggsToOpen)
+            local amount = tonumber(Options.OpenEggsAmount.Value) or 1
+            for _, eggName in ipairs({ "Common Egg", "Rare Egg", "Legendary Egg" }) do
+                if isSelected(eggSet, eggName) then
+                    drainOpen(Remotes.OpenEgg, eggName, amount)
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(3)
-		if Options.OpenPacksEnabled.Value and playerAlive() then
-			local packSet = selectedSet(Options.PacksToOpen)
-			local amount = tonumber(Options.OpenPacksAmount.Value) or 1
-			local packNames = GetSeedPackNames()
-			for _, packName in ipairs(packNames) do
-				if packName ~= "All" and isSelected(packSet, packName) then
-					drainOpen(Remotes.OpenSeedPack, packName, amount)
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(3)
+        if Options.OpenPacksEnabled.Value and playerAlive() then
+            local packSet = selectedSet(Options.PacksToOpen)
+            local amount = tonumber(Options.OpenPacksAmount.Value) or 1
+            for _, packName in ipairs({ "Basic Pack", "Premium Pack" }) do
+                if isSelected(packSet, packName) then
+                    drainOpen(Remotes.OpenSeedPack, packName, amount)
+                end
+            end
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(3)
-		if Options.OpenCratesEnabled.Value and playerAlive() then
-			local crateSet = selectedSet(Options.CratesToOpen)
-			local amount = tonumber(Options.OpenCratesAmount.Value) or 1
-			for _, crate in ipairs(CrateData.GetAllCrates()) do
-				local crateName = type(crate) == "table" and crate.Name or crate
-				if isSelected(crateSet, crateName) then
-					drainOpen(Remotes.OpenCrate, crateName, amount)
-				end
-			end
-		end
-	end
+    while true do
+        task.wait(3)
+        if Options.OpenCratesEnabled.Value and playerAlive() then
+            local crateSet = selectedSet(Options.CratesToOpen)
+            local amount = tonumber(Options.OpenCratesAmount.Value) or 1
+            for _, crate in ipairs(CrateData.GetAllCrates()) do
+                local crateName = type(crate) == "table" and crate.Name or crate
+                if isSelected(crateSet, crateName) then
+                    drainOpen(Remotes.OpenCrate, crateName, amount)
+                end
+            end
+        end
+    end
 end)
 
 local function buildPetIndex()
-	local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
-	local byName = {}
-	if type(pets) ~= "table" then return byName end
-	for key, pet in pairs(pets) do
-		if type(pet) == "table" and pet.Name then
-			local uuid = pet.Id or key
-			local bucket = byName[pet.Name]
-			if not bucket then
-				bucket = { equipped = {}, unequipped = {} }
-				byName[pet.Name] = bucket
-			end
-			if pet.Equipped then
-				bucket.equipped[#bucket.equipped + 1] = uuid
-			else
-				bucket.unequipped[#bucket.unequipped + 1] = uuid
-			end
-		end
-	end
-	return byName
+    local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
+    local byName = {}
+    if type(pets) ~= "table" then return byName end
+    for key, pet in pairs(pets) do
+        if type(pet) == "table" and pet.Name then
+            local uuid = pet.Id or key
+            local bucket = byName[pet.Name]
+            if not bucket then
+                bucket = { equipped = {}, unequipped = {} }
+                byName[pet.Name] = bucket
+            end
+            if pet.Equipped then
+                bucket.equipped[#bucket.equipped + 1] = uuid
+            else
+                bucket.unequipped[#bucket.unequipped + 1] = uuid
+            end
+        end
+    end
+    return byName
 end
 
 local function getMaxEquippedPets()
-	local m = LocalPlayer:GetAttribute("MaxEquippedPets")
-	if type(m) == "number" and m > 0 then return math.floor(m) end
-	if PetSlotPrices and type(PetSlotPrices.BaseMax) == "number" then
-		return math.floor(PetSlotPrices.BaseMax)
-	end
-	return math.huge
+    local m = LocalPlayer:GetAttribute("MaxEquippedPets")
+    if type(m) == "number" and m > 0 then return math.floor(m) end
+    if PetSlotPrices and type(PetSlotPrices.BaseMax) == "number" then
+        return math.floor(PetSlotPrices.BaseMax)
+    end
+    return math.huge
 end
 
 local function getEquippedCount()
-	local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
-	if type(pets) ~= "table" then return 0 end
-	local count = 0
-	for _, pet in pairs(pets) do
-		if type(pet) == "table" and pet.Equipped then
-			count += 1
-		end
-	end
-	return count
+    local pets = replica and replica.Data and replica.Data.Inventory and replica.Data.Inventory.Pets
+    if type(pets) ~= "table" then return 0 end
+    local count = 0
+    for _, pet in pairs(pets) do
+        if type(pet) == "table" and pet.Equipped then
+            count += 1
+        end
+    end
+    return count
 end
 
 local function computeTargets(byName, blacklist, priority, cap)
-	local targets, used = {}, 0
+    local targets, used = {}, 0
 
-	local function owned(name)
-		local b = byName[name]
-		return b and (#b.equipped + #b.unequipped) or 0
-	end
-	local function take(name, n)
-		if n <= 0 then return end
-		local already = targets[name] or 0
-		local room = math.min(n, owned(name) - already, cap - used)
-		if room > 0 then
-			targets[name] = already + room
-			used += room
-		end
-	end
+    local function owned(name)
+        local b = byName[name]
+        return b and (#b.equipped + #b.unequipped) or 0
+    end
+    local function take(name, n)
+        if n <= 0 then return end
+        local already = targets[name] or 0
+        local room = math.min(n, owned(name) - already, cap - used)
+        if room > 0 then
+            targets[name] = already + room
+            used += room
+        end
+    end
 
-	local names = {}
-	for name in pairs(byName) do
-		if not blacklist[name] then names[#names + 1] = name end
-	end
-	table.sort(names)
+    local names = {}
+    for name in pairs(byName) do
+        if not blacklist[name] then names[#names + 1] = name end
+    end
+    table.sort(names)
 
-	for _, name in ipairs(names) do
-		if priority[name] then take(name, math.huge) end
-	end
-	for _, name in ipairs(names) do
-		if not priority[name] then take(name, math.huge) end
-	end
+    for _, name in ipairs(names) do
+        if priority[name] then take(name, math.huge) end
+    end
+    for _, name in ipairs(names) do
+        if not priority[name] then take(name, math.huge) end
+    end
 
-	return targets, used
+    return targets, used
 end
 
 local _petsDirty = true
 local function markPetsDirty()
-	_petsDirty = true
+    _petsDirty = true
 end
 
 local _petsSyncing = false
 
 local function syncPets()
-	local blacklistSet = selectedSet(Options.BlacklistedPets) or {}
-	local prioritySet = selectedSet(Options.PriorityPets) or {}
+    local blacklistSet = selectedSet(Options.BlacklistedPets) or {}
+    local prioritySet = selectedSet(Options.PriorityPets) or {}
 
-	local byName = buildPetIndex()
-	local cap = getMaxEquippedPets()
-	local targets = computeTargets(byName, blacklistSet, prioritySet, cap)
+    local byName = buildPetIndex()
+    local cap = getMaxEquippedPets()
+    local targets = computeTargets(byName, blacklistSet, prioritySet, cap)
 
-	local toEquip, toUnequip = {}, {}
-	for name, bucket in pairs(byName) do
-		local target = targets[name] or 0
-		local have = #bucket.equipped
-		if have > target then
-			for i = target + 1, have do
-				toUnequip[#toUnequip + 1] = bucket.equipped[i]
-			end
-		elseif have < target then
-			local need = math.min(target - have, #bucket.unequipped)
-			for i = 1, need do
-				toEquip[#toEquip + 1] = bucket.unequipped[i]
-			end
-		end
-	end
+    local toEquip, toUnequip = {}, {}
+    for name, bucket in pairs(byName) do
+        local target = targets[name] or 0
+        local have = #bucket.equipped
+        if have > target then
+            for i = target + 1, have do
+                toUnequip[#toUnequip + 1] = bucket.equipped[i]
+            end
+        elseif have < target then
+            local need = math.min(target - have, #bucket.unequipped)
+            for i = 1, need do
+                toEquip[#toEquip + 1] = bucket.unequipped[i]
+            end
+        end
+    end
 
-	if #toEquip == 0 and #toUnequip == 0 then
-		return
-	end
+    if #toEquip == 0 and #toUnequip == 0 then
+        return
+    end
 
-	debugLog("Auto Equip", "Unequipping", #toUnequip, "Equipping", #toEquip)
+    debugLog("Auto Equip", "Unequipping", #toUnequip, "Equipping", #toEquip)
 
-	for _, uuid in ipairs(toUnequip) do
-		Remotes.RequestUnequip:Fire(uuid)
-	end
+    for _, uuid in ipairs(toUnequip) do
+        Remotes.RequestUnequip:Fire(uuid)
+    end
 
-	if #toUnequip > 0 then
-		task.wait(0.1)
-	end
+    if #toUnequip > 0 then
+        task.wait(0.1)
+    end
 
-	local cap2 = getMaxEquippedPets()
-	local currentlyEquipped = getEquippedCount()
+    local cap2 = getMaxEquippedPets()
+    local currentlyEquipped = getEquippedCount()
 
-	for _, uuid in ipairs(toEquip) do
-		if currentlyEquipped >= cap2 then
-			debugLog("Auto Equip", "Cap reached, stopping equip pass")
-			break
-		end
-		local foundTool = nil
-		for _, tool in pairs(Backpack:GetChildren()) do
-			if (tool:GetAttribute("PetId") or "") == uuid then
-				foundTool = tool
-				break
-			end
-		end
-		if foundTool then
-			equipAndActivateTool(foundTool)
-			currentlyEquipped += 1
-		end
-	end
+    for _, uuid in ipairs(toEquip) do
+        if currentlyEquipped >= cap2 then
+            debugLog("Auto Equip", "Cap reached, stopping equip pass")
+            break
+        end
+        local foundTool = nil
+        for _, tool in pairs(Backpack:GetChildren()) do
+            if (tool:GetAttribute("PetId") or "") == uuid then
+                foundTool = tool
+                break
+            end
+        end
+        if foundTool then
+            equipAndActivateTool(foundTool)
+            currentlyEquipped += 1
+        end
+    end
 end
 
 if Remotes.PetEquipped then
-	Remotes.PetEquipped.OnClientEvent:Connect(function()
-		if _petsSyncing then return end
-		markPetsDirty()
-	end)
+    Remotes.PetEquipped.OnClientEvent:Connect(function()
+        if _petsSyncing then return end
+        markPetsDirty()
+    end)
 end
 if Remotes.PetUnequipped then
-	Remotes.PetUnequipped.OnClientEvent:Connect(function()
-		if _petsSyncing then return end
-		markPetsDirty()
-	end)
+    Remotes.PetUnequipped.OnClientEvent:Connect(function()
+        if _petsSyncing then return end
+        markPetsDirty()
+    end)
 end
 
 Backpack.ChildAdded:Connect(function()
-	markPetsDirty()
+    markPetsDirty()
 end)
 
 local _equipPetsWasEnabled = false
 
 task.spawn(function()
-	while true do
-		task.wait(0.3)
-		local enabled = Options.EquipPetsEnabled.Value
-		local justEnabled = enabled and not _equipPetsWasEnabled
-		_equipPetsWasEnabled = enabled
+    while true do
+        task.wait(0.3)
+        local enabled = Options.EquipPetsEnabled.Value
+        local justEnabled = enabled and not _equipPetsWasEnabled
+        _equipPetsWasEnabled = enabled
 
-		if justEnabled then
-			markPetsDirty()
-		end
+        if justEnabled then
+            markPetsDirty()
+        end
 
-		if enabled and playerAlive() and not _petsSyncing and _petsDirty then
-			_petsDirty = false
-			_petsSyncing = true
-			local ok, err = xpcall(syncPets, debug.traceback)
-			if not ok then
-				debugWarn("Auto Equip", "syncPets errored:", err)
-			end
-			_petsSyncing = false
-		end
-	end
+        if enabled and playerAlive() and not _petsSyncing and _petsDirty then
+            _petsDirty = false
+            _petsSyncing = true
+            local ok, err = xpcall(syncPets, debug.traceback)
+            if not ok then
+                debugWarn("Auto Equip", "syncPets errored:", err)
+            end
+            _petsSyncing = false
+        end
+    end
 end)
 
 task.spawn(function()
-	while true do
-		task.wait(20)
-		if Options.EquipPetsEnabled.Value then
-			markPetsDirty()
-		end
-	end
+    while true do
+        task.wait(20)
+        if Options.EquipPetsEnabled.Value then
+            markPetsDirty()
+        end
+    end
 end)
 
 local function getIconUrl(iconCache, iconAssetId)
-	if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
-	local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
-	if not assetNumber then return nil end
-	if iconCache[assetNumber] then return iconCache[assetNumber] end
+    if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
+    local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
+    if not assetNumber then return nil end
+    if iconCache[assetNumber] then return iconCache[assetNumber] end
 
-	local thumbnailUrl = nil
-	pcall(function()
-		local r = request({
-			Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
-			Method = "GET",
-		})
-		if r and r.Success then
-			local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
-			if ok and decoded and decoded.data and decoded.data[1] then
-				local d = decoded.data[1]
-				if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
-					thumbnailUrl = d.imageUrl
-				end
-			end
-		end
-	end)
-	if thumbnailUrl then iconCache[assetNumber] = thumbnailUrl end
-	return thumbnailUrl
+    local thumbnailUrl = nil
+    pcall(function()
+        local r = request({
+            Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
+            Method = "GET",
+        })
+        if r and r.Success then
+            local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
+            if ok and decoded and decoded.data and decoded.data[1] then
+                local d = decoded.data[1]
+                if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
+                    thumbnailUrl = d.imageUrl
+                end
+            end
+        end
+    end)
+    if thumbnailUrl then iconCache[assetNumber] = thumbnailUrl end
+    return thumbnailUrl
 end
 
 local _petBuyIconCache = {}
 
 local function sendBuyPetWebhook(data, price, oneIn, guid)
-	if not Options.PetsWebhookEnabled.Value then return end
-	local webhookUrl = Options.PetsWebhookURL.Value
-	local minLuck = tonumber(Options.MinLuckSent.Value) or 0
-	if oneIn < minLuck then return end
-	if not webhookUrl or webhookUrl == "" then return end
+    if not Options.PetsWebhookEnabled.Value then return end
+    local webhookUrl = Options.PetsWebhookURL.Value
+    local minLuck = tonumber(Options.MinLuckSent.Value) or 0
+    if oneIn < minLuck then return end
+    if not webhookUrl or webhookUrl == "" then return end
 
-	local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
-	local title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
-	local fields = {
-		{ name = "Player", value = "||" .. LocalPlayer.Name .. "||", inline = true },
-		{ name = "Price", value = formatNumber(price), inline = true },
-		{ name = "Rarity", value = tostring(data.Rarity), inline = true },
-		{ name = "server-job-id", value = tostring(game.JobId), inline = false },
-		{ name = "pet-unique-guid", value = tostring(guid or "N/A"), inline = false },
-	}
-	local note = Options.PetsNote.Value
-	if note and note ~= "" then
-		table.insert(fields, { name = "Note", value = note, inline = false })
-	end
-	local embed = {
-		title = title,
-		color = 0x5865F2,
-		fields = fields,
-		footer = { text = "discord.gg/idiothub" },
-	}
-	local thumbnailUrl = getIconUrl(_petBuyIconCache, data.Image)
-	if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
+    local article = data.DisplayName:match("^[AEIOUaeiou]") and "an" or "a"
+    local title = "Captured " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. data.DisplayName .. "!"
+    local fields = {
+        { name = "Player", value = "||" .. LocalPlayer.Name .. "||", inline = true },
+        { name = "Price", value = formatNumber(price), inline = true },
+        { name = "Rarity", value = tostring(data.Rarity), inline = true },
+        { name = "server-job-id", value = tostring(game.JobId), inline = false },
+        { name = "pet-unique-guid", value = tostring(guid or "N/A"), inline = false },
+    }
+    local note = Options.PetsNote.Value
+    if note and note ~= "" then
+        table.insert(fields, { name = "Note", value = note, inline = false })
+    end
+    local embed = {
+        title = title,
+        color = 0x5865F2,
+        fields = fields,
+        footer = { text = "discord.gg/idiothub" },
+    }
+    local thumbnailUrl = getIconUrl(_petBuyIconCache, data.Image)
+    if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
 
-	local payload
-	local ok = pcall(function()
-		payload = HttpService:JSONEncode({ embeds = { embed } })
-	end)
-	if not ok or not payload then
-		debugWarn("Auto Buy Pets", "Failed to encode webhook payload")
-		return
-	end
+    local payload
+    local ok = pcall(function()
+        payload = HttpService:JSONEncode({ embeds = { embed } })
+    end)
+    if not ok or not payload then
+        debugWarn("Auto Buy Pets", "Failed to encode webhook payload")
+        return
+    end
 
-	local reqOk, response = pcall(function()
-		return request({
-			Url = webhookUrl,
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = payload,
-		})
-	end)
-	if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
-		debugWarn("Auto Buy Pets", "Webhook send failed")
-	end
+    local reqOk, response = pcall(function()
+        return request({
+            Url = webhookUrl,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = payload,
+        })
+    end)
+    if not reqOk or not response or not response.StatusCode or response.StatusCode >= 300 then
+        debugWarn("Auto Buy Pets", "Webhook send failed")
+    end
 end
 
 local function shouldBuyPet(data)
-	local raritySet = selectedSet(Options.TargetRarities)
-	local nameSet = selectedSet(Options.TargetPets)
-	if nameSet and nameSet[data.DisplayName] then return true end
-	if raritySet and raritySet[data.Rarity] then return true end
-	if nameSet == nil or raritySet == nil then return true end
-	return false
+    local raritySet = selectedSet(Options.TargetRarities)
+    local nameSet = selectedSet(Options.TargetPets)
+    if nameSet and nameSet[data.DisplayName] then return true end
+    if raritySet and raritySet[data.Rarity] then return true end
+    if nameSet == nil or raritySet == nil then return true end
+    return false
 end
 
 local petBuying = {}
@@ -2488,162 +2380,118 @@ local petConfirmedGuids = {}
 local PetBuyState = { active = 0 }
 
 local function findGuidForPet(petName)
-	if not wildPetSpawns then return nil end
-	for _, child in ipairs(wildPetSpawns:GetChildren()) do
-		local pn, g = parseWildPetName(child.Name)
-		if pn == petName and g then return g end
-	end
-	return nil
+    if not wildPetSpawns then return nil end
+    for _, child in ipairs(wildPetSpawns:GetChildren()) do
+        local pn, g = parseWildPetName(child.Name)
+        if pn == petName and g then return g end
+    end
+    return nil
 end
 
 local function executeBuyPet(refPart, petName, data, guid)
-	local char = LocalPlayer.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
 
-	petPendingConfirm[petName] = {
-		Price = refPart:GetAttribute("Price") or data.BasePrice,
-		guid = guid,
-	}
+    petPendingConfirm[petName] = {
+        Price = refPart:GetAttribute("Price") or data.BasePrice,
+        guid = guid,
+    }
 
-	for _ = 0, 2 do
-		if guid and petConfirmedGuids[guid] then break end
-		if not refPart.Parent then break end
-		local owner = refPart:GetAttribute("OwnerName")
-		if owner and #owner > 1 then break end
+    for _ = 0, 2 do
+        if guid and petConfirmedGuids[guid] then break end
+        if not refPart.Parent then break end
+        local owner = refPart:GetAttribute("OwnerName")
+        if owner and #owner > 1 then break end
 
-		teleport(CFrame.new(refPart.Position + Vector3.new(0, 3, 0)))
-		task.wait(0.2)
+        teleport(CFrame.new(refPart.Position + Vector3.new(0, 3, 0)))
+        task.wait(0.2)
 
-		local ok, err = pcall(function()
-			Remotes.WildPetTame:Fire(refPart)
-		end)
-		if not ok then
-			debugWarn("Auto Buy Pets", "WildPetTame fire failed:", err)
-		end
+        local ok, err = pcall(function()
+            Remotes.WildPetTame:Fire(refPart)
+        end)
+        if not ok then
+            debugWarn("Auto Buy Pets", "WildPetTame fire failed:", err)
+        end
 
-		local deadline = os.clock() + WILD_PET_TIMEOUT
-		while os.clock() < deadline do
-			if guid and petConfirmedGuids[guid] then break end
-			if not refPart.Parent then break end
-			task.wait(0.1)
-		end
-		if guid and petConfirmedGuids[guid] then break end
-	end
+        local deadline = os.clock() + 2
+        while os.clock() < deadline do
+            if guid and petConfirmedGuids[guid] then break end
+            if not refPart.Parent then break end
+            task.wait(0.1)
+        end
+        if guid and petConfirmedGuids[guid] then break end
+    end
 
-	petPendingConfirm[petName] = nil
+    petPendingConfirm[petName] = nil
 end
 
 local function tryBuyPet(refPart)
-	if not Options.BuyPetsEnabled.Value then return end
-	if petBuying[refPart] then return end
+    if not Options.BuyPetsEnabled.Value then return end
+    if petBuying[refPart] then return end
 
-	local owner = refPart:GetAttribute("OwnerName")
-	if owner and #owner > 1 then return end
+    local owner = refPart:GetAttribute("OwnerName")
+    if owner and #owner > 1 then return end
 
-	local petName = refPart:GetAttribute("PetName")
-	local data = petName and PetData[petName]
-	if not data then return end
-	if not shouldBuyPet(data) then return end
+    local petName = refPart:GetAttribute("PetName")
+    local data = petName and PetData[petName]
+    if not data then return end
+    if not shouldBuyPet(data) then return end
 
-	local price = refPart:GetAttribute("Price") or data.BasePrice
-	if not price or getBalance() < price then return end
+    local price = refPart:GetAttribute("Price") or data.BasePrice
+    if not price or getBalance() < price then return end
 
-	local parent = refPart.Parent
-	local guid = nil
-	if parent then
-		local _, g = parseWildPetName(parent.Name)
-		guid = g
-	end
-	if guid and (petBuying[guid] or petConfirmedGuids[guid]) then return end
+    local parent = refPart.Parent
+    local guid = nil
+    if parent then
+        local _, g = parseWildPetName(parent.Name)
+        guid = g
+    end
+    if guid and (petBuying[guid] or petConfirmedGuids[guid]) then return end
 
-	petBuying[refPart] = true
-	if guid then petBuying[guid] = true end
+    petBuying[refPart] = true
+    if guid then petBuying[guid] = true end
 
-	PetBuyState.active += 1
-	local ok, err = pcall(executeBuyPet, refPart, petName, data, guid)
-	if not ok then
-		debugWarn("Auto Buy Pets", "executeBuyPet errored:", err)
-	end
-	PetBuyState.active -= 1
+    PetBuyState.active += 1
+    local ok, err = pcall(executeBuyPet, refPart, petName, data, guid)
+    if not ok then
+        debugWarn("Auto Buy Pets", "executeBuyPet errored:", err)
+    end
+    PetBuyState.active -= 1
 
-	petBuying[refPart] = nil
-	if guid then petBuying[guid] = nil end
+    petBuying[refPart] = nil
+    if guid then petBuying[guid] = nil end
 end
 
 if Remotes.WildPetCollected then
-	Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
-		local petName = select(2, ...)
-		if not petName then return end
-		local meta = petPendingConfirm[petName]
-		local data = PetData[petName]
-		if not data then return end
-		local guid = meta and meta.guid or findGuidForPet(petName)
-		if guid then petConfirmedGuids[guid] = true end
-		local price = (meta and meta.Price) or data.BasePrice or 0
-		local oneIn = calcOneIn(data.SpawnChance)
-		task.spawn(sendBuyPetWebhook, data, price, oneIn, guid)
-		debugLog("Auto Buy Pets", "Bought", petName)
-	end)
+    Remotes.WildPetCollected.OnClientEvent:Connect(function(...)
+        local petName = select(2, ...)
+        if not petName then return end
+        local meta = petPendingConfirm[petName]
+        local data = PetData[petName]
+        if not data then return end
+        local guid = meta and meta.guid or findGuidForPet(petName)
+        if guid then petConfirmedGuids[guid] = true end
+        local price = (meta and meta.Price) or data.BasePrice or 0
+        local oneIn = calcOneIn(data.SpawnChance)
+        task.spawn(sendBuyPetWebhook, data, price, oneIn, guid)
+        debugLog("Auto Buy Pets", "Bought", petName)
+    end)
 end
 
 if wildPetRef then
-	wildPetRef.ChildAdded:Connect(function(refPart)
-		task.spawn(tryBuyPet, refPart)
-	end)
+    wildPetRef.ChildAdded:Connect(function(refPart)
+        task.spawn(tryBuyPet, refPart)
+    end)
 
-	task.spawn(function()
-		while true do
-			task.wait(15)
-			for _, refPart in ipairs(wildPetRef:GetChildren()) do
-				task.spawn(tryBuyPet, refPart)
-			end
-		end
-	end)
-end
-
-local seedPackSpawnFolder = MapFolder:FindFirstChild("SeedPackSpawnServerLocations")
-local _seedPackClaiming = {}
-
-local function isGoldOrRainbowPack(part)
-	return part:GetAttribute("RainbowSeed") == true or part:GetAttribute("GoldSeed") == true
-end
-
-local function tryClaimSeedPack(part)
-	if not Remotes.ClickPack then return end
-	if not part.Parent then return end
-	if _seedPackClaiming[part] then return end
-	if not isGoldOrRainbowPack(part) then return end
-
-	_seedPackClaiming[part] = true
-	local ok, err = pcall(function()
-		teleport(CFrame.new(part.Position + Vector3.new(0, 3, 0)))
-		task.wait(SETTLE_TIME)
-		Remotes.ClickPack:Fire(part.Name)
-	end)
-	if not ok then
-		debugWarn("Auto Collect Seed Packs", "claim failed:", err)
-	end
-	_seedPackClaiming[part] = nil
-end
-
-if seedPackSpawnFolder then
-	seedPackSpawnFolder.ChildAdded:Connect(function(part)
-		if Options.CollectSeedPacksEnabled.Value and playerAlive() then
-			task.spawn(tryClaimSeedPack, part)
-		end
-	end)
-
-	task.spawn(function()
-		while true do
-			task.wait(2)
-			if Options.CollectSeedPacksEnabled.Value and playerAlive() then
-				for _, part in ipairs(seedPackSpawnFolder:GetChildren()) do
-					task.spawn(tryClaimSeedPack, part)
-				end
-			end
-		end
-	end)
+    task.spawn(function()
+        while true do
+            task.wait(15)
+            for _, refPart in ipairs(wildPetRef:GetChildren()) do
+                task.spawn(tryBuyPet, refPart)
+            end
+        end
+    end)
 end
 
 Window:SelectTab(1)
