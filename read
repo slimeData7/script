@@ -10,6 +10,9 @@ local SellValueData = require(SharedModules:WaitForChild("SellValueData"))
 local PetData = require(SharedData:WaitForChild("PetData"))
 local CrateData = require(SharedModules:WaitForChild("CrateData"))
 local GearShopData = require(SharedModules:WaitForChild("GearShopData"))
+local MutationData = require(SharedModules:WaitForChild("MutationData"))
+local EggData = require(SharedModules:WaitForChild("EggData"))
+local SeedPackData = require(SharedModules:WaitForChild("SeedPackData"))
 
 getgenv().IdiotHubDebug = false
 getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
@@ -58,8 +61,6 @@ local function featureLoop(name, interval, body)
     end)
 end
 
-local MUTATIONS = { "Bloodlit", "Chained", "Electric", "Frozen", "Gold", "Rainbow", "Starstruck" }
-
 local function withAll(list)
     table.insert(list, 1, "All")
     return list
@@ -77,9 +78,10 @@ end
 local function GetMutationNames()
     return safeList("Mutations", function()
         local list = {}
-        for _, name in ipairs(MUTATIONS) do
+        for name in pairs(MutationData) do
             table.insert(list, name)
         end
+        table.sort(list)
         return list
     end)
 end
@@ -144,6 +146,26 @@ local function GetGearNames()
         local list = {}
         for _, gear in ipairs(GearShopData.Data) do
             table.insert(list, gear.ItemName)
+        end
+        return list
+    end)
+end
+
+local function GetEggNames()
+    return safeList("Eggs", function()
+        local list = {}
+        for _, egg in ipairs(EggData.Data) do
+            table.insert(list, egg.EggName)
+        end
+        return list
+    end)
+end
+
+local function GetPackNames()
+    return safeList("Packs", function()
+        local list = {}
+        for _, pack in ipairs(SeedPackData.Data) do
+            table.insert(list, pack.PackName)
         end
         return list
     end)
@@ -259,15 +281,6 @@ local HarvestMutationsDropdown = Tabs.Farming:AddDropdown("HarvestMutations", {
 })
 HandleAllSelection(HarvestMutationsDropdown, HarvestMutationValues, "HarvestMutations")
 
-local HarvestVariantValues = withAll({ "Giant", "Normal", "Shiny" })
-local HarvestVariantsDropdown = Tabs.Farming:AddDropdown("HarvestVariants", {
-    Title = "Variants To Collect",
-    Values = HarvestVariantValues,
-    Multi = true,
-    Default = {}
-})
-HandleAllSelection(HarvestVariantsDropdown, HarvestVariantValues, "HarvestVariants")
-
 Tabs.Farming:AddToggle("HarvestInstantMutated", {
     Title = "Collect Mutated Fruit On Sight",
     Default = false
@@ -353,7 +366,7 @@ Tabs.Selling:AddParagraph({ Title = "Auto Favorite", Content = "" })
 
 Tabs.Selling:AddDropdown("FavoriteChecks", {
     Title = "Favorite Conditions",
-    Values = { "Mutation", "Sell Price", "Variant" },
+    Values = { "Mutation", "Sell Price" },
     Multi = true,
     Default = {}
 })
@@ -559,7 +572,7 @@ Options.EquipPetsEnabled:OnChanged(logToggle("EquipPetsEnabled", "Auto Equip Pet
 
 Tabs.Opening:AddParagraph({ Title = "Auto Open Eggs", Content = "" })
 
-local EggsToOpenValues = withAll({ "Common Egg", "Legendary Egg", "Rare Egg" })
+local EggsToOpenValues = GetEggNames()
 local EggsToOpenDropdown = Tabs.Opening:AddDropdown("EggsToOpen", {
     Title = "Eggs To Open",
     Values = EggsToOpenValues,
@@ -584,7 +597,7 @@ Options.OpenEggsEnabled:OnChanged(logToggle("OpenEggsEnabled", "Auto Open Eggs")
 
 Tabs.Opening:AddParagraph({ Title = "Auto Open Seed Packs", Content = "" })
 
-local PacksToOpenValues = withAll({ "Basic Pack", "Premium Pack" })
+local PacksToOpenValues = GetPackNames()
 local PacksToOpenDropdown = Tabs.Opening:AddDropdown("PacksToOpen", {
     Title = "Packs To Open",
     Values = PacksToOpenValues,
@@ -1089,8 +1102,8 @@ local function matchesList(set, value)
     return isSelected(set, value or "Normal")
 end
 
-local function checkFruitCollect(mutationSet, variantSet, instantMutated, mutation, variant, age, maxAge)
-    local eligible = matchesList(mutationSet, mutation) and matchesList(variantSet, variant)
+local function checkFruitCollect(mutationSet, instantMutated, mutation, age, maxAge)
+    local eligible = matchesList(mutationSet, mutation)
     if not eligible then return false end
     local instant = mutation and instantMutated
     return instant or (maxAge > 0 and age >= maxAge)
@@ -1263,7 +1276,6 @@ local function _rebuildGardenCache()
 
     local doHarvest = Options.HarvestEnabled.Value
     local mutationSet = selectedSet(Options.HarvestMutations)
-    local variantSet = selectedSet(Options.HarvestVariants)
     local instantMutated = Options.HarvestInstantMutated.Value
 
     for plantId, p in pairs(garden) do
@@ -1282,13 +1294,13 @@ local function _rebuildGardenCache()
         if doHarvest then
             if p.Fruits then
                 for fruitId, f in pairs(p.Fruits) do
-                    if checkFruitCollect(mutationSet, variantSet, instantMutated, f.Mutation, f.Variant, f.Age or 0, f.MaxAge or 0) then
+                    if checkFruitCollect(mutationSet, instantMutated, f.Mutation, f.Age or 0, f.MaxAge or 0) then
                         local ht = _harvestTargets
                         ht[#ht + 1] = { plantId = plantId, fruitId = fruitId }
                     end
                 end
             else
-                if checkFruitCollect(mutationSet, variantSet, instantMutated, p.Mutation, p.Variant, p.Age or 0, p.MaxAge or 0) then
+                if checkFruitCollect(mutationSet, instantMutated, p.Mutation, p.Age or 0, p.MaxAge or 0) then
                     local ht = _harvestTargets
                     ht[#ht + 1] = { plantId = plantId, fruitId = "" }
                 end
@@ -1747,7 +1759,6 @@ local function _registerFruit(tool)
         id = tool:GetAttribute("Id"),
         name = tool:GetAttribute("FruitName"),
         mutation = tool:GetAttribute("Mutation"),
-        variant = tool:GetAttribute("Variant"),
         weight = tool:GetAttribute("Weight"),
         isFavorite = isFav,
     }
@@ -1758,7 +1769,7 @@ local function _registerFruit(tool)
         _sellSet[tool] = true
     end
 
-    local conns = table.create(6)
+    local conns = table.create(5)
     _fruitConns[tool] = conns
 
     conns[1] = tool:GetAttributeChangedSignal("IsFavorite"):Connect(function()
@@ -1777,11 +1788,6 @@ local function _registerFruit(tool)
     conns[2] = tool:GetAttributeChangedSignal("Mutation"):Connect(function()
         rec.mutation = tool:GetAttribute("Mutation")
         _sellValueCache[tool] = nil
-        _markFavDirty(tool, rec)
-    end)
-
-    conns[6] = tool:GetAttributeChangedSignal("Variant"):Connect(function()
-        rec.variant = tool:GetAttribute("Variant")
         _markFavDirty(tool, rec)
     end)
 
@@ -1851,7 +1857,7 @@ task.spawn(function()
     while true do
         task.wait(0.9)
         if Options.FavoriteEnabled.Value and playerAlive() and next(_favQueue) ~= nil then
-            local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, Variant = true, SellPrice = true }
+            local checks = selectedSet(Options.FavoriteChecks) or { Mutation = true, SellPrice = true }
             local minS = tonumber(Options.FavoriteMinPrice.Value) or 0
             local mutSet = selectedSet(Options.FavoriteMutations)
             local remote = Remotes.SetFruitFavorite
@@ -1869,10 +1875,6 @@ task.spawn(function()
                     if checks["Mutation"] then
                         local mut = rec.mutation
                         if mut and isSelected(mutSet, mut) then shouldFav = true end
-                    end
-                    if not shouldFav and checks["Variant"] then
-                        local variant = rec.variant
-                        if variant and variant ~= "Normal" then shouldFav = true end
                     end
                     if not shouldFav and checks["Sell Price"] then
                         local sp = _getCachedSellValue(tool)
@@ -2051,9 +2053,9 @@ task.spawn(function()
         if Options.OpenEggsEnabled.Value and playerAlive() then
             local eggSet = selectedSet(Options.EggsToOpen)
             local amount = tonumber(Options.OpenEggsAmount.Value) or 1
-            for _, eggName in ipairs({ "Common Egg", "Rare Egg", "Legendary Egg" }) do
-                if isSelected(eggSet, eggName) then
-                    drainOpen(Remotes.OpenEgg, eggName, amount)
+            for _, egg in ipairs(EggData.Data) do
+                if isSelected(eggSet, egg.EggName) then
+                    drainOpen(Remotes.OpenEgg, egg.EggName, amount)
                 end
             end
         end
@@ -2066,9 +2068,9 @@ task.spawn(function()
         if Options.OpenPacksEnabled.Value and playerAlive() then
             local packSet = selectedSet(Options.PacksToOpen)
             local amount = tonumber(Options.OpenPacksAmount.Value) or 1
-            for _, packName in ipairs({ "Basic Pack", "Premium Pack" }) do
-                if isSelected(packSet, packName) then
-                    drainOpen(Remotes.OpenSeedPack, packName, amount)
+            for _, pack in ipairs(SeedPackData.Data) do
+                if isSelected(packSet, pack.PackName) then
+                    drainOpen(Remotes.OpenSeedPack, pack.PackName, amount)
                 end
             end
         end
