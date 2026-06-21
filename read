@@ -320,7 +320,7 @@ Tabs.Selling:AddDropdown("SellMode", {
     Title = "Sell Mode",
     Values = { "Keep Favorites", "Sell All", "Sell Selected" },
     Multi = false,
-    Default = 1
+    Default = 2
 })
 Options.SellMode:OnChanged(function()
     debugLog("Sell Mode", "changed to", Options.SellMode.Value)
