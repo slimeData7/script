@@ -29,6 +29,7 @@ local SeedPackData = require(SharedModules:WaitForChild("SeedPackData"))
 
 getgenv().IdiotHubDebug = false
 getgenv().IdiotHubLog = getgenv().IdiotHubLog or {}
+getgenv().IdiotHubSilent = getgenv().IdiotHubSilent or false
 
 local MAX_LOG_LINES = 300
 local SETTLE_TIME = 0.1
@@ -42,7 +43,7 @@ local function debugLog(tag, ...)
     local log = getgenv().IdiotHubLog
     log[#log + 1] = { text = line, time = os.time(), level = "info" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
         print("[IdiotHub]", "[" .. tag .. "]", ...)
     end
 end
@@ -56,7 +57,7 @@ local function debugWarn(tag, ...)
     local log = getgenv().IdiotHubLog
     log[#log + 1] = { text = line, time = os.time(), level = "warn" }
     if #log > MAX_LOG_LINES then table.remove(log, 1) end
-    if getgenv().IdiotHubDebug then
+    if getgenv().IdiotHubDebug and not getgenv().IdiotHubSilent then
         warn("[IdiotHub]", "[" .. tag .. "]", ...)
     end
 end
@@ -117,8 +118,10 @@ end
 local function GetMutationNames()
     return safeList("Mutations", function()
         local list = {}
-        for name in pairs(MutationData) do
-            table.insert(list, name)
+        for name, data in pairs(MutationData) do
+            if type(data) == "table" then
+                table.insert(list, name)
+            end
         end
         table.sort(list)
         return list
@@ -258,6 +261,24 @@ local Options = Fluent.Options
 Tabs.Main:AddParagraph({
     Title = "IdiotHub 1.1.0",
     Content = "_somerandomidiot\nmalik9ng"
+})
+
+local ExecutorName = "Unknown"
+do
+    local ok, name = pcall(function()
+        if identifyexecutor then
+            return (identifyexecutor())
+        end
+        return nil
+    end)
+    if ok and name then
+        ExecutorName = name
+    end
+end
+
+Tabs.Main:AddParagraph({
+    Title = "Info",
+    Content = "Executor: " .. ExecutorName .. "\n[+] Anti afk is enabled by default"
 })
 
 Tabs.Main:AddButton({
@@ -819,8 +840,8 @@ local Remotes = {
     RequestUnequip = resolveRemote("Pets.RequestUnequip"),
     PetEquipped = resolveRemote("Pets.PetEquipped"),
     PetUnequipped = resolveRemote("Pets.PetUnequipped"),
-    WildPetTame = Networking.Pets.WildPetTame,
-    WildPetCollected = Networking.Pets.WildPetCollected,
+    WildPetTame = resolveRemote("Pets.WildPetTame"),
+    WildPetCollected = resolveRemote("Pets.WildPetCollected"),
     OpenCrate = resolveRemote("Crate.OpenCrate"),
     OpenSeedPack = resolveRemote("SeedPack.OpenSeedPack"),
     OpenEgg = resolveRemote("Egg.OpenEgg"),
