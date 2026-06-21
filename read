@@ -199,10 +199,9 @@ Tabs.Main:AddParagraph({
     Content = "IdiotHub 1.1.0"
 })
 
-local executor = identifyexecutor()
 Tabs.Main:AddParagraph({
-    Title = "Executor",
-    Content = executor or "Unknown"
+    Title = "Status",
+    Content = "No modules enabled"
 })
 
 Tabs.Main:AddParagraph({
@@ -319,7 +318,7 @@ Tabs.Selling:AddParagraph({ Title = "Auto Sell", Content = "" })
 
 Tabs.Selling:AddDropdown("SellMode", {
     Title = "Sell Mode",
-    Values = { "Sell All", "Sell Selected" },
+    Values = { "Keep Favorites", "Sell All", "Sell Selected" },
     Multi = false,
     Default = 1
 })
@@ -1443,128 +1442,134 @@ local function _trySetup(plotId)
     return _plotCenter ~= nil
 end
 
-local function runHarvestPass()
-    if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
-        if getFruitCount(true) < 100 then
-            tickGarden()
-            if #_harvestTargets > 0 and Remotes.CollectFruit then
-                teleport("Garden")
-                local fire = Remotes.CollectFruit.Fire
-                local fruitCount = getFruitCount(true)
-                local collected = 0
-                for i = 1, #_harvestTargets do
-                    local t = _harvestTargets[i]
-                    fire(Remotes.CollectFruit, t.plantId, t.fruitId)
-                    fruitCount += 1
-                    collected += 1
-                    if fruitCount >= 90 then break end
-                end
-                if collected > 0 then
-                    markGardenDirty()
-                    debugLog("Auto Harvest", "Collected", collected, "fruit")
-                end
-            end
-        end
-    end
-end
-
-local function runPlantPass()
-    if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
-        local plotId = LocalPlayer:GetAttribute("PlotId")
-        if plotId and _trySetup(plotId) then
-            tickGarden()
-
-            local seedSet = selectedSet(Options.PlantSeeds)
-
-            local seedTools = {}
-            for name, toolList in pairs(_seedInventory) do
-                if isSelected(seedSet, name) then
-                    for _, tool in ipairs(toolList) do
-                        local stack = tool:GetAttribute("Count") or 1
-                        if stack > 0 then
-                            seedTools[#seedTools + 1] = { tool = tool, amount = stack }
-                        end
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if Options.HarvestEnabled.Value and playerAlive() and GardenSyncCtrl then
+            if getFruitCount(true) < 100 then
+                tickGarden()
+                if #_harvestTargets > 0 and Remotes.CollectFruit then
+                    teleport("Garden")
+                    local fire = Remotes.CollectFruit.Fire
+                    local fruitCount = getFruitCount(true)
+                    local collected = 0
+                    for i = 1, #_harvestTargets do
+                        local t = _harvestTargets[i]
+                        fire(Remotes.CollectFruit, t.plantId, t.fruitId)
+                        fruitCount += 1
+                        collected += 1
+                        if fruitCount >= 90 then break end
                     end
-                end
-            end
-
-            if #_candidates > 0 and #seedTools > 0 then
-                local char = LocalPlayer.Character
-                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    local sorted = getSortedCandidates()
-                    local sortIdx = 1
-
-                    local function nextSpot()
-                        while sortIdx <= #sorted do
-                            local pos = _candidates[sorted[sortIdx].idx]
-                            sortIdx += 1
-                            if _inPerimeter(pos) and not isOccupied(pos) then
-                                return pos
-                            end
-                        end
-                        return nil
-                    end
-
-                    local function ensureEquipped(tool)
-                        if not tool or not tool.Parent then return false end
-                        local held = char:FindFirstChildWhichIsA("Tool")
-                        if held == tool then return true end
-                        humanoid:EquipTool(tool)
-                        local deadline = os.clock() + 0.3
-                        repeat
-                            task.wait()
-                            if not tool.Parent then return false end
-                            held = char:FindFirstChildWhichIsA("Tool")
-                            if held == tool then return true end
-                        until os.clock() > deadline
-                        return false
-                    end
-
-                    local placed = 0
-                    local outOfSpots = false
-                    for _, entry in ipairs(seedTools) do
-                        if outOfSpots then break end
-                        local seedTool = entry.tool
-                        local count = entry.amount
-                        while count > 0 and seedTool.Parent do
-                            local spot = nextSpot()
-                            if not spot then
-                                outOfSpots = true
-                                break
-                            end
-                            if not ensureEquipped(seedTool) then break end
-                            local seedName = seedTool:GetAttribute("SeedTool")
-                            if not seedName then break end
-
-                            teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
-                            task.wait(SETTLE_TIME)
-                            Remotes.PlantSeed:Fire(spot, seedName, seedTool)
-
-                            _occMark(spot)
-                            _optMark(spot)
-                            _densAdd(spot)
-                            _candidDirty = true
-                            placed += 1
-                            count -= 1
-                        end
-                    end
-
-                    humanoid:UnequipTools()
-                    if placed > 0 then
+                    if collected > 0 then
                         markGardenDirty()
-                        debugLog("Auto Plant", "Planted", placed, "seeds")
-                    end
-                    if outOfSpots then
-                        debugLog("Auto Plant", "No more available spots")
+                        debugLog("Auto Harvest", "Collected", collected, "fruit")
                     end
                 end
-            elseif #seedTools == 0 then
-                debugLog("Auto Plant", "No selected seeds left in inventory")
             end
         end
     end
-end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if Options.PlantEnabled.Value and playerAlive() and LocalPlayer:FindFirstChildOfClass("Backpack") then
+            local plotId = LocalPlayer:GetAttribute("PlotId")
+            if plotId and _trySetup(plotId) then
+                tickGarden()
+
+                local seedSet = selectedSet(Options.PlantSeeds)
+
+                local seedTools = {}
+                for name, toolList in pairs(_seedInventory) do
+                    if isSelected(seedSet, name) then
+                        for _, tool in ipairs(toolList) do
+                            local stack = tool:GetAttribute("Count") or 1
+                            if stack > 0 then
+                                seedTools[#seedTools + 1] = { tool = tool, amount = stack }
+                            end
+                        end
+                    end
+                end
+
+                if #_candidates > 0 and #seedTools > 0 then
+                    local char = LocalPlayer.Character
+                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                    if humanoid then
+                        local sorted = getSortedCandidates()
+                        local sortIdx = 1
+
+                        local function nextSpot()
+                            while sortIdx <= #sorted do
+                                local pos = _candidates[sorted[sortIdx].idx]
+                                sortIdx += 1
+                                if _inPerimeter(pos) and not isOccupied(pos) then
+                                    return pos
+                                end
+                            end
+                            return nil
+                        end
+
+                        local function ensureEquipped(tool)
+                            if not tool or not tool.Parent then return false end
+                            local held = char:FindFirstChildWhichIsA("Tool")
+                            if held == tool then return true end
+                            humanoid:EquipTool(tool)
+                            local deadline = os.clock() + 0.3
+                            repeat
+                                task.wait()
+                                if not tool.Parent then return false end
+                                held = char:FindFirstChildWhichIsA("Tool")
+                                if held == tool then return true end
+                            until os.clock() > deadline
+                            return false
+                        end
+
+                        local placed = 0
+                        local outOfSpots = false
+                        for _, entry in ipairs(seedTools) do
+                            if outOfSpots then break end
+                            local seedTool = entry.tool
+                            local count = entry.amount
+                            while count > 0 and seedTool.Parent do
+                                local spot = nextSpot()
+                                if not spot then
+                                    outOfSpots = true
+                                    break
+                                end
+                                if not ensureEquipped(seedTool) then break end
+                                local seedName = seedTool:GetAttribute("SeedTool")
+                                if not seedName then break end
+
+                                teleport(CFrame.new(spot + Vector3.new(0, 3, 0)))
+                                task.wait(SETTLE_TIME)
+                                Remotes.PlantSeed:Fire(spot, seedName, seedTool)
+
+                                _occMark(spot)
+                                _optMark(spot)
+                                _densAdd(spot)
+                                _candidDirty = true
+                                placed += 1
+                                count -= 1
+                            end
+                        end
+
+                        humanoid:UnequipTools()
+                        if placed > 0 then
+                            markGardenDirty()
+                            debugLog("Auto Plant", "Planted", placed, "seeds")
+                        end
+                        if outOfSpots then
+                            debugLog("Auto Plant", "No more available spots")
+                        end
+                    end
+                elseif #seedTools == 0 then
+                    debugLog("Auto Plant", "No selected seeds left in inventory")
+                end
+            end
+        end
+    end
+end)
 
 local RadiusMap = {}
 do
@@ -1632,110 +1637,75 @@ local function scoreSprinklerCands()
     return out
 end
 
-local function runSprinklerPass()
-    if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
-        local plotId = LocalPlayer:GetAttribute("PlotId")
-        if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
-            tickGarden()
-
-            local sprinklerSet = selectedSet(Options.SprinklersToUse)
-            local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
-            local existingCounts, occupied = buildSprinklerState(synced)
-
-            local sortedTypes = {}
-            for sName, tools in pairs(_sprinklerInventory) do
-                if isSelected(sprinklerSet, sName) then
-                    local toPlace = #tools - (existingCounts[sName] or 0)
-                    toPlace = math.min(toPlace, #tools)
-                    if toPlace > 0 then
-                        sortedTypes[#sortedTypes + 1] = {
-                            Name = sName, ToPlace = toPlace,
-                            Radius = RadiusMap[sName] or 0, Tools = tools,
-                        }
-                    end
-                end
-            end
-
-            if #sortedTypes > 0 then
-                table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
-                teleport("Garden")
-
-                local candidates = scoreSprinklerCands()
-                local char = LocalPlayer.Character
-                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-
-                if #candidates > 0 and humanoid then
-                    local totalPlaced = 0
-                    for _, st in ipairs(sortedTypes) do
-                        local placed = 0
-                        local tools = st.Tools
-                        local name = st.Name
-                        local r = st.Radius
-
-                        for _, cand in ipairs(candidates) do
-                            if placed >= st.ToPlace then break end
-                            if not isCovered(occupied, cand.Position, name) then
-                                local tool = tools[placed + 1]
-                                if tool then
-                                    if tool.Parent ~= char then
-                                        humanoid:EquipTool(tool)
-                                    end
-                                    teleport(cand.Position + Vector3.new(0, 2, 0), false)
-                                    task.wait(SETTLE_TIME)
-                                    Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
-                                    occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
-                                    placed += 1
-                                end
-                            end
-                        end
-                        totalPlaced += placed
-                    end
-                    humanoid:UnequipTools()
-                    if totalPlaced > 0 then
-                        markGardenDirty()
-                        debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
-                    end
-                end
-            end
-        end
-    end
-end
-
-local LC = {}
-do
-    local existing = getgenv().LoopController
-    if existing and existing.Connections then
-        for _, c in pairs(existing.Connections) do
-            pcall(function() c:Disconnect() end)
-        end
-    end
-    getgenv().LoopController = { Connections = {} }
-    LC = getgenv().LoopController
-
-    LC.Passes = {
-        { Name = "Harvest", Fn = runHarvestPass },
-        { Name = "Plant", Fn = runPlantPass },
-        { Name = "Sprinkler", Fn = runSprinklerPass },
-    }
-    LC.Index = 1
-
-    function LC:RunNext()
-        local n = #self.Passes
-        if n == 0 then return end
-        local entry = self.Passes[self.Index]
-        self.Index = (self.Index % n) + 1
-
-        local ok, err = xpcall(entry.Fn, debug.traceback)
-        if not ok then
-            debugWarn(entry.Name, "pass errored:", err)
-        end
-    end
-end
-
 task.spawn(function()
     while true do
-        task.wait(0.5)
-        LC:RunNext()
+        task.wait(1)
+        if Options.SprinklerEnabled.Value and playerAlive() and GardenSyncCtrl then
+            local plotId = LocalPlayer:GetAttribute("PlotId")
+            if plotId and _trySetup(plotId) and _spawnCF and #_sprinklerCands > 0 then
+                tickGarden()
+
+                local sprinklerSet = selectedSet(Options.SprinklersToUse)
+                local synced = GardenSyncCtrl:GetSprinklers(userId) or {}
+                local existingCounts, occupied = buildSprinklerState(synced)
+
+                local sortedTypes = {}
+                for sName, tools in pairs(_sprinklerInventory) do
+                    if isSelected(sprinklerSet, sName) then
+                        local toPlace = #tools - (existingCounts[sName] or 0)
+                        toPlace = math.min(toPlace, #tools)
+                        if toPlace > 0 then
+                            sortedTypes[#sortedTypes + 1] = {
+                                Name = sName, ToPlace = toPlace,
+                                Radius = RadiusMap[sName] or 0, Tools = tools,
+                            }
+                        end
+                    end
+                end
+
+                if #sortedTypes > 0 then
+                    table.sort(sortedTypes, function(a, b) return a.Radius > b.Radius end)
+                    teleport("Garden")
+
+                    local candidates = scoreSprinklerCands()
+                    local char = LocalPlayer.Character
+                    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+                    if #candidates > 0 and humanoid then
+                        local totalPlaced = 0
+                        for _, st in ipairs(sortedTypes) do
+                            local placed = 0
+                            local tools = st.Tools
+                            local name = st.Name
+                            local r = st.Radius
+
+                            for _, cand in ipairs(candidates) do
+                                if placed >= st.ToPlace then break end
+                                if not isCovered(occupied, cand.Position, name) then
+                                    local tool = tools[placed + 1]
+                                    if tool then
+                                        if tool.Parent ~= char then
+                                            humanoid:EquipTool(tool)
+                                        end
+                                        teleport(cand.Position + Vector3.new(0, 2, 0), false)
+                                        task.wait(SETTLE_TIME)
+                                        Remotes.PlaceSprinkler:Fire(cand.Position, name, tool, plotId)
+                                        occupied[#occupied + 1] = { Pos = cand.Position, R2 = r * r, Name = name }
+                                        placed += 1
+                                    end
+                                end
+                            end
+                            totalPlaced += placed
+                        end
+                        humanoid:UnequipTools()
+                        if totalPlaced > 0 then
+                            markGardenDirty()
+                            debugLog("Auto Sprinkler", "Placed", totalPlaced, "sprinklers")
+                        end
+                    end
+                end
+            end
+        end
     end
 end)
 
