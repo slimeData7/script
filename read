@@ -1,3 +1,16 @@
+task.spawn(function()
+    for _, conn in pairs(getconnections(game.Players.LocalPlayer.Idled)) do
+        conn:Disable()
+    end
+
+    local VirtualUser = game:GetService("VirtualUser")
+
+    game.Players.LocalPlayer.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+end)
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -231,9 +244,22 @@ Tabs.Main:AddParagraph({
     Content = "_somerandomidiot\nmalik9ng"
 })
 
+local ExecutorName = "Unknown"
+do
+    local ok, name = pcall(function()
+        if identifyexecutor then
+            return (identifyexecutor())
+        end
+        return nil
+    end)
+    if ok and name then
+        ExecutorName = name
+    end
+end
+
 Tabs.Main:AddParagraph({
-    Title = "Statistics",
-    Content = "Crops Harvested: 0\nMoney Earned: 0"
+    Title = "Info",
+    Content = "Executor: " .. ExecutorName .. "\n[+] Anti afk is enabled by default"
 })
 
 Tabs.Main:AddButton({
