@@ -1,796 +1,153 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local LocalPlayer = game:GetService("Players").LocalPlayer
+task.spawn(function()
+	local idledConns = typeof(getconnections) == "function" and getconnections(game.Players.LocalPlayer.Idled) or {}
+	for _, conn in pairs(idledConns) do
+		conn:Disable()
+	end
 
-local PRUNE_KEEP = {
-    [Workspace] = {
-        "Map.WildPetRef",
-        "Map.WildPetSpawns",
-        "Map.Baseplate",
-        "_PetVisualClient",
-        "_PetVisualClient.Models",
-    },
-}
+	local VirtualUser = game:GetService("VirtualUser")
 
-local PRUNE_FORCE_KEEP = {
-    Workspace.CurrentCamera,
-    Workspace:FindFirstChildOfClass("Terrain"),
-    LocalPlayer.Character,
-}
-
-local protected = {}
-local function protect(inst)
-    if not inst then return end
-    protected[inst] = true
-    for _, d in ipairs(inst:GetDescendants()) do protected[d] = true end
-    local p = inst.Parent
-    while p do protected[p] = true p = p.Parent end
-end
-
-local function resolve(root, path)
-    local node = root
-    for name in string.gmatch(path, "[^%.]+") do
-        if not node then return nil end
-        node = node:FindFirstChild(name)
-    end
-    return node
-end
-
-for root, paths in pairs(PRUNE_KEEP) do
-    if root then
-        protected[root] = true
-        for _, path in ipairs(paths) do
-            local inst = resolve(root, path)
-            if inst then protect(inst) end
-        end
-    end
-end
-for _, inst in ipairs(PRUNE_FORCE_KEEP) do protect(inst) end
-
-local count = 0
-for _, root in ipairs({ Workspace }) do
-    if not root then continue end
-    for _, inst in ipairs(root:GetDescendants()) do
-        local parent = inst.Parent
-        if parent and protected[parent] and not protected[inst] then
-            pcall(function() inst:Destroy() end)
-            count += 1
-        end
-    end
-end
-
-local AUTO_BUY_PETS = {
-    ENABLED = true,
-    NAMES = {
-        "Raccoon",
-        "Monkey",
-        "Unicorn",
-        "Golden Dragonfly",
-        "Black Dragon",
-        "Ice Serpent",
-    },
-    RARITIES = {
-        "Mythic",
-        "Secret",
-    },
-    MINIMUM_LUCK_SENT = 0,
-    SEND_SKIPPED = true,
-    CONFIRM_TIMEOUT = 2,
-    BUY_RETRIES = 2,
-    ICON_RETRIES = 25,
-    WEBHOOK_URL = "https://discord.com/api/webhooks/1505625971519389930/M486V4Vxl8aRftnn9E5coxtrREdECj3k9oM6xeP3yFMR8fw97e-8SSc8WUhyJrxUjkNC",
-    DISCORD_ID = "1135837863603351573",
-    NOTE = "",
-}
-
-local HOP = {
-    FETCH_MODE = "CursorFetch",
-    RETRY_FAILED = true,
-    MAX_RETRIES = 3,
-    SKIP_VISITED = true,
-    MIN_PLAYERS = 1,
-    PERSIST = true,
-    DEBUG = false,
-}
-
-local MAX_CACHE = 2000
-
-local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local Lighting = game:GetService("Lighting")
-
-local placeId = game.PlaceId
-local accountKey = tostring(LocalPlayer.UserId)
-
-local Networking = require(ReplicatedStorage.SharedModules.Networking)
-local PetData = require(ReplicatedStorage.SharedData.PetData)
-local replica = require(ReplicatedStorage.ClientModules.PlayerStateClient):WaitForLocalReplica(30)
-
-local BuyState = { active = 0 }
-
-local function resolveRemote(path)
-    local current = Networking
-    for part in path:gmatch("[^.]+") do
-        current = current[part]
-        if not current then return nil end
-    end
-    return current
-end
-
-local WildPetTame = resolveRemote("Pets.WildPetTame")
-local WildPetCollected = resolveRemote("Pets.WildPetCollected")
-
-local map = workspace:WaitForChild("Map", 30)
-local wildPetRef = map and map:WaitForChild("WildPetRef", 30)
-
-local function makeBoundedSet(limit)
-    local set, order, head = {}, {}, 1
-    return {
-        has = function(k) return set[k] ~= nil end,
-        add = function(k)
-            if set[k] then return end
-            set[k] = true
-            order[#order + 1] = k
-            if #order - head + 1 > limit then
-                set[order[head]] = nil
-                order[head] = nil
-                head += 1
-            end
-        end,
-    }
-end
-
-local iconCache = {}
-local iconOrder, iconHead = {}, 1
-local function cacheIcon(key, val)
-    iconCache[key] = val
-    iconOrder[#iconOrder + 1] = key
-    if #iconOrder - iconHead + 1 > MAX_CACHE then
-        iconCache[iconOrder[iconHead]] = nil
-        iconOrder[iconHead] = nil
-        iconHead += 1
-    end
-end
-
-local function getBalance()
-    return replica and replica.Data and replica.Data.Sheckles or 0
-end
-
-local function formatNumber(n)
-    n = tonumber(n) or 0
-    if n >= 1e9 then return string.format("%.1fB", n / 1e9)
-    elseif n >= 1e6 then return string.format("%.1fM", n / 1e6)
-    elseif n >= 1e3 then return string.format("%.1fK", n / 1e3)
-    else return tostring(math.round(n)) end
-end
-
-local function calcOneIn(spawnChance)
-    if not spawnChance or spawnChance <= 0 then return 0 end
-    return math.round(1 / (spawnChance / 100))
-end
-
-local function parseWildPetName(name)
-    local guid = name:match("^WildPet_(.+)$")
-    if not guid or guid == "" then return nil end
-    return guid
-end
-
-local function redactGuid(guid)
-    if not guid or guid == "" then return "N/A" end
-    return "||...." .. guid:sub(-4) .. "||"
-end
-
-local function getIconUrl(iconAssetId)
-    if not iconAssetId or iconAssetId == "N/A" or iconAssetId == "" then return nil end
-    local assetNumber = tostring(iconAssetId):match("rbxassetid://(%d+)")
-    if not assetNumber then return nil end
-    if iconCache[assetNumber] then return iconCache[assetNumber] end
-
-    for attempt = 1, AUTO_BUY_PETS.ICON_RETRIES do
-        local url
-        pcall(function()
-            local r = request({
-                Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
-                Method = "GET"
-            })
-            if r and r.Success then
-                local ok, decoded = pcall(HttpService.JSONDecode, HttpService, r.Body)
-                if ok and decoded and decoded.data and decoded.data[1] then
-                    local d = decoded.data[1]
-                    if d.state == "Completed" and d.imageUrl and d.imageUrl ~= "" then
-                        url = d.imageUrl
-                    end
-                end
-            end
-        end)
-        if url then
-            cacheIcon(assetNumber, url)
-            return url
-        end
-        task.wait(math.min(0.2 * attempt, 2))
-    end
-    return nil
-end
-
-local webhookQueue = {}
-local webhookRunning = false
-
-local function processWebhookQueue()
-    if webhookRunning then return end
-    webhookRunning = true
-    task.spawn(function()
-        while #webhookQueue > 0 do
-            local payload = table.remove(webhookQueue, 1)
-            local attempt = 0
-            while attempt < 5 do
-                attempt += 1
-                local resp
-                pcall(function()
-                    resp = request({
-                        Url = AUTO_BUY_PETS.WEBHOOK_URL,
-                        Method = "POST",
-                        Headers = { ["Content-Type"] = "application/json" },
-                        Body = payload
-                    })
-                end)
-                if resp and resp.StatusCode == 429 then
-                    local retryAfter = 1
-                    pcall(function()
-                        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, resp.Body)
-                        if ok and decoded and decoded.retry_after then
-                            retryAfter = tonumber(decoded.retry_after) or 1
-                        end
-                    end)
-                    task.wait(retryAfter)
-                else
-                    break
-                end
-            end
-            task.wait(0.4)
-        end
-        webhookRunning = false
-    end)
-end
-
-local function queueWebhook(embed, mention)
-    local payload
-    if not pcall(function()
-        payload = HttpService:JSONEncode({ content = mention, embeds = { embed } })
-    end) then return end
-    table.insert(webhookQueue, payload)
-    processWebhookQueue()
-end
-
-local function sendPetWebhook(data, price, oneIn, guid, state, spawnedAt, sniped)
-    if not data then return end
-    oneIn = oneIn or 0
-    if oneIn < AUTO_BUY_PETS.MINIMUM_LUCK_SENT then return end
-    if AUTO_BUY_PETS.WEBHOOK_URL == "" then return end
-    local display = tostring(data.DisplayName or "Unknown")
-    local article = display:match("^[AEIOUaeiou]") and "an" or "a"
-    local statusNote = sniped
-        and "Pet was successfully sniped gg nigga!"
-        or "Pet was spawned but has not been sniped cuz its prob ahh"
-    local fields = {
-        { name = "Price", value = formatNumber(price), inline = true },
-        { name = "Rarity", value = tostring(data.Rarity or "N/A"), inline = true },
-        { name = "State", value = tostring(state or "N/A"), inline = true },
-        { name = "Spawned At", value = spawnedAt and ("<t:" .. math.floor(spawnedAt) .. ":R>") or "N/A", inline = true },
-        { name = "Status", value = statusNote, inline = false },
-        { name = "server-job-id", value = tostring(game.JobId), inline = false },
-        { name = "pet-unique-guid", value = redactGuid(guid), inline = false },
-    }
-    if AUTO_BUY_PETS.NOTE ~= "" then
-        table.insert(fields, { name = "Note", value = AUTO_BUY_PETS.NOTE, inline = false })
-    end
-    local embed = {
-        title = "Some new shi spawned " .. article .. " 1 in " .. formatNumber(oneIn) .. " " .. display .. "!",
-        color = sniped and 0x57F287 or 0xED4245,
-        fields = fields,
-        footer = { text = "footer twin" }
-    }
-    local thumb = getIconUrl(data.Image)
-    if thumb then embed.thumbnail = { url = thumb } end
-    local mention = (sniped and AUTO_BUY_PETS.DISCORD_ID ~= "") and ("<@" .. AUTO_BUY_PETS.DISCORD_ID .. ">") or nil
-    queueWebhook(embed, mention)
-end
-
-local skippedSent = makeBoundedSet(MAX_CACHE)
-local confirmedGuids = makeBoundedSet(MAX_CACHE)
-local buying = {}
-local pendingConfirm = {}
-
-local function norm(s)
-    return tostring(s):lower():gsub("^%s+", ""):gsub("%s+$", "")
-end
-
-local nameList = {}
-for _, n in ipairs(AUTO_BUY_PETS.NAMES) do
-    local v = norm(n)
-    if v ~= "" then nameList[#nameList + 1] = v end
-end
-local raritySet = {}
-for _, r in ipairs(AUTO_BUY_PETS.RARITIES) do raritySet[norm(r)] = true end
-
-local function nameMatches(target)
-    target = norm(target)
-    if target == "" then return false end
-    for _, cfg in ipairs(nameList) do
-        if target == cfg or target:find(cfg, 1, true) or cfg:find(target, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function shouldBuyPet(petName, data)
-    if nameMatches(petName) then return true end
-    if nameMatches(data.DisplayName) then return true end
-    if data.Rarity and raritySet[norm(data.Rarity)] then return true end
-    return false
-end
-
-local function getPetInfo(refPart)
-    local petName = refPart:GetAttribute("PetName")
-    if not petName then return nil end
-    local data = PetData[petName]
-    if not data then return nil end
-    return petName, data
-end
-
-local function waitForAttributes(refPart, timeout)
-    if refPart:GetAttribute("PetName") then return true end
-    local deadline = os.clock() + (timeout or 1)
-    while os.clock() < deadline do
-        if not refPart.Parent then return false end
-        if refPart:GetAttribute("PetName") then return true end
-        task.wait()
-    end
-    return refPart:GetAttribute("PetName") ~= nil
-end
-
-local function executeBuy(refPart, petName, data, guid)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    pendingConfirm[petName] = {
-        State = refPart:GetAttribute("State"),
-        SpawnedAt = refPart:GetAttribute("SpawnedAt"),
-        guid = guid,
-    }
-
-    hrp.CFrame = CFrame.new(refPart.Position + Vector3.new(0, 3, 0))
-
-    for _ = 0, AUTO_BUY_PETS.BUY_RETRIES do
-        if guid and confirmedGuids.has(guid) then break end
-        if not refPart.Parent then break end
-        local owner = refPart:GetAttribute("OwnerName")
-        if owner and #owner > 1 then break end
-        WildPetTame:Fire(refPart)
-        local deadline = os.clock() + AUTO_BUY_PETS.CONFIRM_TIMEOUT
-        while os.clock() < deadline do
-            if guid and confirmedGuids.has(guid) then break end
-            if not refPart.Parent then break end
-            task.wait(0.1)
-        end
-        if guid and confirmedGuids.has(guid) then break end
-    end
-
-    if not (guid and confirmedGuids.has(guid)) then
-        local meta = pendingConfirm[petName]
-        pendingConfirm[petName] = nil
-        if meta then
-            task.spawn(sendPetWebhook, data, refPart:GetAttribute("Price") or data.BasePrice or 0,
-                calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, false)
-        end
-    end
-end
-
-local function evaluatePet(refPart)
-    if not AUTO_BUY_PETS.ENABLED then return nil end
-    if not refPart.Parent then return nil end
-
-    local owner = refPart:GetAttribute("OwnerName")
-    if owner and #owner > 1 then return nil end
-
-    local guid = parseWildPetName(refPart.Name)
-    if guid and (buying[guid] or confirmedGuids.has(guid)) then return nil end
-
-    local petName, data = getPetInfo(refPart)
-    if not data then return nil end
-
-    if not shouldBuyPet(petName, data) then
-        if AUTO_BUY_PETS.SEND_SKIPPED and guid and not skippedSent.has(guid) then
-            skippedSent.add(guid)
-            task.spawn(sendPetWebhook, data, data.BasePrice or 0,
-                calcOneIn(data.SpawnChance), guid,
-                refPart:GetAttribute("State"), refPart:GetAttribute("SpawnedAt"), false)
-        end
-        return nil
-    end
-
-    return {
-        refPart = refPart,
-        petName = petName,
-        data = data,
-        guid = guid,
-        oneIn = calcOneIn(data.SpawnChance),
-    }
-end
-
-local function processCandidate(c)
-    BuyState.active += 1
-    if c.guid then buying[c.guid] = true end
-    pcall(executeBuy, c.refPart, c.petName, c.data, c.guid)
-    if c.guid then buying[c.guid] = nil end
-    BuyState.active -= 1
-end
-
-local function handleSpawn(refPart)
-    task.spawn(function()
-        if not waitForAttributes(refPart, 1) then return end
-        local c = evaluatePet(refPart)
-        if c then processCandidate(c) end
-    end)
-end
-
-WildPetCollected.OnClientEvent:Connect(function(...)
-    local petName = select(2, ...)
-    if not petName then return end
-    local meta = pendingConfirm[petName]
-    if not meta then return end
-    local data = PetData[petName]
-    if not data then return end
-    local guid = meta.guid
-    if guid then confirmedGuids.add(guid) end
-    pendingConfirm[petName] = nil
-    task.spawn(sendPetWebhook, data, data.BasePrice or 0,
-        calcOneIn(data.SpawnChance), guid, meta.State, meta.SpawnedAt, true)
+	game.Players.LocalPlayer.Idled:Connect(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.new())
+	end)
 end)
 
-local function runScan()
-    if not wildPetRef then return end
-    local candidates = {}
-    for _, refPart in ipairs(wildPetRef:GetChildren()) do
-        if waitForAttributes(refPart, 0.25) then
-            local c = evaluatePet(refPart)
-            if c then table.insert(candidates, c) end
-        end
-    end
-    table.sort(candidates, function(a, b) return a.oneIn > b.oneIn end)
-    for _, c in ipairs(candidates) do
-        processCandidate(c)
-    end
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+
+local PlayerStateClient = require(ReplicatedStorage.Libraries.PlayerState.PlayerStateClient)
+local BlockConfig = require(ReplicatedStorage.Shared.Configurations.Block)
+local MutationConfig = require(ReplicatedStorage.Shared.Configurations.Mutation)
+local CarConfig = require(ReplicatedStorage.Shared.Configurations.Car)
+local UpgradeConfig = require(ReplicatedStorage.Shared.Configurations.Upgrade)
+local ItemConfig = require(ReplicatedStorage.Shared.Configurations.Item)
+
+local CollectCash = ReplicatedStorage.Remotes.Plot.CollectCash
+local SpawnBlock = ReplicatedStorage.Remotes.Block.SpawnBlock
+local BuyBlock = ReplicatedStorage.Remotes.Block.BuyBlock
+local UpgradeCar = ReplicatedStorage.Remotes.Car.UpgradeCar
+local PlaceItem = ReplicatedStorage.Remotes.Plot.PlaceItem
+local BuyUpgrade = ReplicatedStorage.Remotes.BuyUpgrade
+
+local localPlayer = Players.LocalPlayer
+local PlotLocations = Workspace.PlotLocations
+local Plots = Workspace.Plots
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1507510832626401371/Ry4IzIqIOSbeHKuES-1G3LnSNyMyN7t5bEjNsUxu9i2Y5YYGgST3DtIzqeBt1VFjiymV"
+
+local rarityColors = {
+	Celestial = 15844367,
+	Godly = 10181046,
+}
+
+local mutationColors = {
+	Normal      = 9807270,
+	Golden      = 16766720,
+	Radioactive = 5763719,
+	Diamond     = 11393254,
+	Ruby        = 15548997,
+	Emerald     = 3066993,
+	Infernal    = 15158332,
+	Rainbow     = 16711935,
+	Divine      = 16777190,
+	Galaxy      = 4393481,
+	["Yin Yang"]= 1315860,
+	Admin       = 16711680,
+	Hacker      = 65280,
+}
+
+local mutationMultipliers = {
+	Normal      = nil,
+	Golden      = "2x better",
+	Radioactive = "2.5x better",
+	Diamond     = "3x better",
+	Ruby        = "3.5x better",
+	Emerald     = "4x better",
+	Infernal    = "4.5x better",
+	Rainbow     = "5x better",
+	Divine      = "4.5x better",
+	Galaxy      = "5x better",
+	["Yin Yang"]= "3.5x better",
+	Admin       = "2.5x better",
+	Hacker      = "5x better",
+}
+
+local webhookRarities = { Godly = true, Celestial = true }
+
+local function formatPlaytime(seconds)
+	seconds = math.floor(tonumber(seconds) or 0)
+	local h = math.floor(seconds / 3600)
+	local m = math.floor((seconds % 3600) / 60)
+	if h > 0 then
+		return string.format("%dh %dm", h, m)
+	end
+	return string.format("%dm", m)
 end
 
-if wildPetRef then
-    wildPetRef.ChildAdded:Connect(handleSpawn)
+local function getBlockCount(blockName)
+	local blocks = PlayerStateClient.Get("Blocks")
+	if not blocks then return 0 end
+	local total = 0
+	for _, entry in pairs(blocks) do
+		if entry.Name == blockName then
+			total = total + (entry.Quantity or 1)
+		end
+	end
+	return total
 end
 
-local FILE_SHARED_QUEUE   = "sh_queue.json"
-local FILE_SHARED_CLAIMED = "sh_claimed.json"
-local FILE_SHARED_VISITED = "sh_visited.json"
-local FILE_SHARED_FAILED  = "sh_failed.json"
-local FILE_FETCH_LOCK     = "sh_fetch_lock.json"
-local FILE_ACCOUNT_STATS  = "acct_stats_" .. accountKey .. ".json"
+local function formatPrice(n)
+	n = tonumber(n) or 0
+	local sign = n < 0 and "-" or ""
+	n = math.abs(n)
 
-local MAX_VISITED_ENTRIES = 800
-local MAX_FAILED_ENTRIES  = 400
-local QUEUE_REFILL_COOLDOWN = 45
-local CLAIM_TTL = 30
-local FETCH_LOCK_TTL = 40
-local FILE_MAX_AGE = 1800
-local MAX_SERVERS_PER_MODE = { NormalFetch = 100, CursorFetch = 300, AdvancedFetch = 1000 }
+	if n >= 1e12 then
+		return sign .. string.format("%.2fT", n / 1e12)
+	elseif n >= 1e9 then
+		return sign .. string.format("%.2fB", n / 1e9)
+	elseif n >= 1e6 then
+		return sign .. string.format("%.2fM", n / 1e6)
+	elseif n >= 1e3 then
+		return sign .. string.format("%.2fK", n / 1e3)
+	end
 
-local localVisited, localFailed = {}, {}
-local localStats = { totalJoined = 0, totalFailed = 0 }
-
-local function dprint(...)
-    if HOP.DEBUG then print("[SH:" .. accountKey:sub(-4) .. "]", ...) end
-end
-local function ts() return os.time() end
-local function jenc(v) local ok, r = pcall(HttpService.JSONEncode, HttpService, v) return ok and r or nil end
-local function jdec(s) local ok, r = pcall(HttpService.JSONDecode, HttpService, s) return ok and r or nil end
-
-local function fileRead(path)
-    if not (isfile and isfile(path)) then return nil end
-    local ok, c = pcall(readfile, path)
-    return (ok and c and c ~= "") and c or nil
-end
-local function fileWrite(path, content) if writefile then pcall(writefile, path, content) end end
-local function fileDelete(path) if isfile and isfile(path) and delfile then pcall(delfile, path) end end
-local function readJSON(path) local c = fileRead(path) return c and jdec(c) or nil end
-local function writeJSON(path, data) local s = jenc(data) if s then fileWrite(path, s) end end
-local function isStale(t, maxAge)
-    if type(t) ~= "table" or type(t._ts) ~= "number" then return true end
-    return (ts() - t._ts) > (maxAge or FILE_MAX_AGE)
-end
-local function wrap(data) data._ts = ts() return data end
-local function safeRequest(o) local ok, r = pcall(request, o) return ok and r or nil end
-
-local function evictOldest(tbl, maxSize)
-    local keys = {}
-    for k in pairs(tbl) do if k ~= "_ts" then table.insert(keys, k) end end
-    if #keys <= maxSize then return end
-    table.sort(keys, function(a, b)
-        local ta = type(tbl[a]) == "table" and (tbl[a].at or 0) or 0
-        local tb = type(tbl[b]) == "table" and (tbl[b].at or 0) or 0
-        return ta < tb
-    end)
-    for i = 1, #keys - maxSize do tbl[keys[i]] = nil end
+	return sign .. string.format("%d", n)
 end
 
-local function loadAccountStats()
-    local d = readJSON(FILE_ACCOUNT_STATS)
-    if d and not isStale(d) then
-        localStats.totalJoined = d.totalJoined or 0
-        localStats.totalFailed = d.totalFailed or 0
-    end
-end
-local function saveAccountStats()
-    writeJSON(FILE_ACCOUNT_STATS, wrap({ totalJoined = localStats.totalJoined, totalFailed = localStats.totalFailed }))
-end
+local ICON_CACHE = {}
 
-local function loadLocalSets()
-    if not HOP.PERSIST then return end
-    local sv = readJSON(FILE_SHARED_VISITED)
-    if sv and not isStale(sv) and type(sv.data) == "table" then
-        for id, v in pairs(sv.data) do if id ~= "_ts" then localVisited[id] = v end end
-    end
-    local sf = readJSON(FILE_SHARED_FAILED)
-    if sf and not isStale(sf) and type(sf.data) == "table" then
-        for id, v in pairs(sf.data) do if id ~= "_ts" then localFailed[id] = v end end
-    end
-end
-local function saveSharedVisited()
-    evictOldest(localVisited, MAX_VISITED_ENTRIES)
-    writeJSON(FILE_SHARED_VISITED, wrap({ data = localVisited }))
-end
-local function saveSharedFailed()
-    evictOldest(localFailed, MAX_FAILED_ENTRIES)
-    writeJSON(FILE_SHARED_FAILED, wrap({ data = localFailed }))
-end
-local function markVisited(jobId)
-    localVisited[jobId] = { at = ts() }
-    if HOP.PERSIST then saveSharedVisited() end
-end
-local function markFailed(jobId)
-    localFailed[jobId] = { at = ts() }
-    if HOP.PERSIST then saveSharedFailed() end
-end
+local function resolveCarIcon(blockName)
+	local drops = ItemConfig.Drops[blockName]
+	if not drops then return nil end
 
-local function tryClaimServer(jobId)
-    local claimed = readJSON(FILE_SHARED_CLAIMED)
-    local now = ts()
-    local data = {}
-    if claimed and type(claimed.data) == "table" then
-        for id, entry in pairs(claimed.data) do
-            if id ~= "_ts" and type(entry) == "table" and (now - (entry.at or 0)) < CLAIM_TTL then
-                data[id] = entry
-            end
-        end
-    end
-    if data[jobId] then return false end
-    data[jobId] = { by = accountKey, at = now }
-    writeJSON(FILE_SHARED_CLAIMED, wrap({ data = data }))
-    task.wait(0.15)
-    local verify = readJSON(FILE_SHARED_CLAIMED)
-    if verify and type(verify.data) == "table" then
-        local entry = verify.data[jobId]
-        if entry and entry.by == accountKey then return true end
-    end
-    return false
-end
-local function releaseClaim(jobId)
-    local claimed = readJSON(FILE_SHARED_CLAIMED)
-    if not claimed or type(claimed.data) ~= "table" then return end
-    claimed.data[jobId] = nil
-    writeJSON(FILE_SHARED_CLAIMED, wrap({ data = claimed.data }))
-end
+	local rarest = nil
+	local lowestWeight = math.huge
+	for _, drop in ipairs(drops) do
+		if drop.Weight < lowestWeight then
+			lowestWeight = drop.Weight
+			rarest = drop
+		end
+	end
+	if not rarest then return nil end
 
-local function tryAcquireFetchLock()
-    local lock = readJSON(FILE_FETCH_LOCK)
-    local now = ts()
-    if lock and type(lock.holder) == "string" and (now - (lock.at or 0)) < FETCH_LOCK_TTL then
-        return false
-    end
-    writeJSON(FILE_FETCH_LOCK, { holder = accountKey, at = now })
-    task.wait(0.2)
-    local verify = readJSON(FILE_FETCH_LOCK)
-    return verify and verify.holder == accountKey or false
-end
-local function releaseFetchLock()
-    local lock = readJSON(FILE_FETCH_LOCK)
-    if lock and lock.holder == accountKey then fileDelete(FILE_FETCH_LOCK) end
-end
-local function getSharedQueueSize()
-    local q = readJSON(FILE_SHARED_QUEUE)
-    return (q and type(q.data) == "table") and #q.data or 0
-end
+	local carData = CarConfig.GetCarData(rarest.Name)
+	if not carData or not carData.Icon then return nil end
 
-local function fetchPage(cursor)
-    local url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true", placeId)
-    if cursor and cursor ~= "" then url = url .. "&cursor=" .. cursor end
-    local res = safeRequest({ Url = url, Method = "GET" })
-    if not res or not res.Body then return nil, nil end
-    if res.StatusCode == 429 then task.wait(10) return nil, nil end
-    if res.StatusCode ~= 200 then return nil, nil end
-    local d = jdec(res.Body)
-    if not d then return nil, nil end
-    return d.data, d.nextPageCursor
-end
+	local assetNumber = string.match(tostring(carData.Icon), "rbxassetid://(%d+)")
+	if not assetNumber then return nil end
 
-local function fetchServers()
-    local collected, seen, cursor, pages = {}, {}, nil, 0
-    local maxCount = MAX_SERVERS_PER_MODE[HOP.FETCH_MODE] or 300
-    local maxPages = HOP.FETCH_MODE == "AdvancedFetch" and 10 or (HOP.FETCH_MODE == "CursorFetch" and 3 or 1)
+	if ICON_CACHE[assetNumber] then
+		return ICON_CACHE[assetNumber]
+	end
 
-    local sv = readJSON(FILE_SHARED_VISITED)
-    local sf = readJSON(FILE_SHARED_FAILED)
-    local sc = readJSON(FILE_SHARED_CLAIMED)
-    local sharedVisited = (sv and type(sv.data) == "table") and sv.data or {}
-    local sharedFailed  = (sf and type(sf.data) == "table") and sf.data or {}
-    local sharedClaimed = (sc and type(sc.data) == "table") and sc.data or {}
-    local now = ts()
-
-    repeat
-        local servers, nextCursor = fetchPage(cursor)
-        if not servers then break end
-        for _, server in ipairs(servers) do
-            local id = server.id
-            if id and not seen[id] then
-                seen[id] = true
-                local playing = server.playing or 0
-                local maxPlayers = server.maxPlayers or 0
-                local skip = false
-                if id == game.JobId then skip = true end
-                if playing < HOP.MIN_PLAYERS then skip = true end
-                if playing >= maxPlayers then skip = true end
-                if HOP.SKIP_VISITED and sharedVisited[id] then skip = true end
-                if sharedFailed[id] then skip = true end
-                if sharedClaimed[id] and (now - (sharedClaimed[id].at or 0)) < CLAIM_TTL then skip = true end
-                if not skip then
-                    table.insert(collected, id)
-                    if #collected >= maxCount then break end
-                end
-            end
-        end
-        cursor = nextCursor
-        pages += 1
-        if #collected >= maxCount then break end
-        if cursor then task.wait(0.5) end
-    until not cursor or cursor == "" or pages >= maxPages
-
-    return collected
-end
-
-local function refillSharedQueue()
-    if not tryAcquireFetchLock() then
-        local waited = 0
-        repeat task.wait(2) waited += 2 until getSharedQueueSize() >= 10 or waited >= FETCH_LOCK_TTL
-        return
-    end
-    local newIds = fetchServers()
-    local existing = readJSON(FILE_SHARED_QUEUE)
-    local existingSet, merged = {}, {}
-    if existing and type(existing.data) == "table" and not isStale(existing) then
-        for _, id in ipairs(existing.data) do
-            if not existingSet[id] then existingSet[id] = true table.insert(merged, id) end
-        end
-    end
-    for _, id in ipairs(newIds) do
-        if not existingSet[id] then existingSet[id] = true table.insert(merged, id) end
-    end
-    writeJSON(FILE_SHARED_QUEUE, wrap({ data = merged, refetchAt = ts() + QUEUE_REFILL_COOLDOWN }))
-    releaseFetchLock()
-end
-
-local function popFromSharedQueue()
-    local q = readJSON(FILE_SHARED_QUEUE)
-    if not q or type(q.data) ~= "table" or #q.data == 0 then return nil end
-    local sv = readJSON(FILE_SHARED_VISITED)
-    local sf = readJSON(FILE_SHARED_FAILED)
-    local sc = readJSON(FILE_SHARED_CLAIMED)
-    local sharedVisited = (sv and type(sv.data) == "table") and sv.data or {}
-    local sharedFailed  = (sf and type(sf.data) == "table") and sf.data or {}
-    local sharedClaimed = (sc and type(sc.data) == "table") and sc.data or {}
-    local now = ts()
-    local picked, remaining = nil, {}
-    for _, id in ipairs(q.data) do
-        if not picked then
-            local skip = false
-            if HOP.SKIP_VISITED and sharedVisited[id] then skip = true end
-            if sharedFailed[id] then skip = true end
-            if sharedClaimed[id] and (now - (sharedClaimed[id].at or 0)) < CLAIM_TTL then skip = true end
-            if not skip then picked = id else table.insert(remaining, id) end
-        else
-            table.insert(remaining, id)
-        end
-    end
-    if not picked then return nil end
-    writeJSON(FILE_SHARED_QUEUE, wrap({ data = remaining, refetchAt = q.refetchAt }))
-    return picked
-end
-
-local function shouldRefetch()
-    local q = readJSON(FILE_SHARED_QUEUE)
-    if not q then return true end
-    if isStale(q) then return true end
-    if type(q.data) == "table" and #q.data < 5 then return true end
-    if type(q.refetchAt) == "number" and ts() >= q.refetchAt then return true end
-    return false
-end
-
-local function applyOptimization()
-    pcall(function() settings().Rendering.QualityLevel = 1 end)
-    pcall(function()
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 9e9
-        Lighting.Brightness = 0
-        Lighting.EnvironmentDiffuseScale = 0
-        Lighting.EnvironmentSpecularScale = 0
-    end)
-end
-
-local function teleportToServer(jobId, attempt)
-    attempt = attempt or 1
-    local ok = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, placeId, jobId, LocalPlayer)
-    if not ok then
-        if HOP.RETRY_FAILED and attempt < HOP.MAX_RETRIES then
-            task.wait(2 ^ attempt)
-            return teleportToServer(jobId, attempt + 1)
-        end
-        releaseClaim(jobId)
-        markFailed(jobId)
-        localStats.totalFailed += 1
-        saveAccountStats()
-        return false
-    end
-    markVisited(jobId)
-    localStats.totalJoined += 1
-    saveAccountStats()
-    task.wait(10)
-    return true
-end
-
-local function waitForBuysToFinish()
-    if BuyState.active <= 0 then return end
-    dprint("Target buying, holding hop...")
-    repeat task.wait(0.25) until BuyState.active <= 0
-    task.wait(0.5)
-end
-
-local function run()
-    applyOptimization()
-    loadAccountStats()
-    loadLocalSets()
-    markVisited(game.JobId)
-
-    task.wait(math.random(0, 3) + (tonumber(accountKey:sub(-3)) or 0) % 5)
-
-    runScan()
-    waitForBuysToFinish()
-
-    if shouldRefetch() then refillSharedQueue() end
-
-    while true do
-        if shouldRefetch() then refillSharedQueue() end
-
-        if getSharedQueueSize() == 0 then
-            dprint("Queue empty, stopping")
-            break
-        end
-
-        local jobId = popFromSharedQueue()
-        if not jobId then task.wait(1) continue end
-        if not tryClaimServer(jobId) then task.wait(0.3) continue end
-
-        waitForBuysToFinish()
-        teleportToServer(jobId)
-        task.wait(0.5)
-    end
-end
-
-run()
+	local thumbnailUrl = nil
+	for attempt = 1, 10 do
+		pcall(function()
+			local r = request({
+				Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. assetNumber .. "&size=420x420&format=Png&isCircular=false",
+				Method = "GET"
+			})
+			if r and r.Success then
+				local decoded = Http
