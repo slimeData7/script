@@ -578,7 +578,7 @@ local Tab = Window:CreateTab("test", nil)
 
 Tab:CreateToggle({
 	Name = "Auto Collect Cash",
-	CurrentValue = false,
+	CurrentValue = true,
 	Flag = "AutoCollectCash",
 	Callback = function(value)
 		Settings.AutoCollectCash = value
@@ -589,7 +589,7 @@ Tab:CreateSection("Auto Buy Blocks")
 
 Tab:CreateToggle({
 	Name = "Auto Buy Blocks",
-	CurrentValue = false,
+	CurrentValue = true,
 	Flag = "AutoBuyBlocks",
 	Callback = function(value)
 		Settings.AutoBuyBlocks = value
@@ -613,7 +613,7 @@ Tab:CreateDropdown({
 
 Tab:CreateToggle({
 	Name = "Buy Any Mutation",
-	CurrentValue = true,
+	CurrentValue = false,
 	Flag = "BuyAnyMutation",
 	Callback = function(value)
 		Settings.BuyAnyMutation = value
