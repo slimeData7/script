@@ -165,7 +165,7 @@ local function sendWebhook(blockName, mutation, rarity, price, uuid)
 		local pickaxe = PlayerStateClient.Get("EquippedPickaxe") or "Unknown"
 		local blockCount = getBlockCount(blockName, uuid)
 		local currentEvent = PlayerStateClient.Get("CurrentEvent") or "None"
-		
+
 		local timeDiff = tick() - lastCashSnapshot.time
 		local cashDiff = cash - lastCashSnapshot.cash
 		local cashPerHour = 0
@@ -173,33 +173,33 @@ local function sendWebhook(blockName, mutation, rarity, price, uuid)
 			cashPerHour = (cashDiff / timeDiff) * 3600
 		end
 		lastCashSnapshot = { cash = cash, time = tick() }
-		
+
 		local cars = PlayerStateClient.Get("Cars") or {}
 		local carsCount = 0
 		for _ in pairs(cars) do carsCount = carsCount + 1 end
 		local totalSlots = (PlayerStateClient.GetPath("UpgradeLevel") or 9)
 		local carSlots = tostring(carsCount) .. "/" .. totalSlots
-		
+
 		local fields = {
 			{ name = "Username", value = localPlayer.Name, inline = true },
 			{ name = "Block + Owned", value = blockName .. " (" .. blockCount .. "x)", inline = true },
 			{ name = "Pickaxe", value = pickaxe, inline = true },
 		}
-		
+
 		if mutation and mutation ~= "Normal" then
 			table.insert(fields, { name = "Mutation", value = mutation, inline = true })
 		end
-		
+
 		table.insert(fields, { name = "Price", value = formatPrice(price), inline = true })
 		table.insert(fields, { name = "Cash", value = formatPrice(cash), inline = true })
 		table.insert(fields, { name = "Cash/Hour", value = formatPrice(cashPerHour), inline = true })
 		table.insert(fields, { name = "Playtime", value = formatPlaytime(playtime), inline = true })
 		table.insert(fields, { name = "Cars", value = carSlots, inline = true })
-		
+
 		if currentEvent ~= "None" then
 			table.insert(fields, { name = "Event", value = currentEvent, inline = true })
 		end
-		
+
 		local embedColor = mutationColors[mutation] or rarityColors[rarity] or 3066993
 		local embed = {
 			title = rarity .. " Block Purchased",
@@ -298,7 +298,6 @@ local placeRarityRank = {
 	Mythic = 6, Cosmic = 7, Secret = 8, Celestial = 9, Godly = 10, Exclusive = 11,
 }
 
-local rarityOrder = { "Godly", "Celestial", "Secret", "Cosmic" }
 local rarityRank = { Godly = 4, Celestial = 3, Secret = 2, Cosmic = 1 }
 
 local Settings = {
@@ -314,7 +313,7 @@ local Settings = {
 	LuckyBlockTarget = "Godly Lucky Block",
 	CarsToSell = {},
 	TargetRarities = { Godly = true },
-	BuyAnyMutation = true,
+	TargetMutations = {},
 }
 
 local function getOwnerPlot()
@@ -396,6 +395,8 @@ SpawnBlock.OnClientEvent:Connect(function(owner, blockName, mutation, uuid)
 	if owner ~= localPlayer then return end
 	local blockData = BlockConfig.GetBlockData(blockName)
 	if not blockData or not Settings.TargetRarities[blockData.Rarity] then return end
+	local hasMutationFilter = next(Settings.TargetMutations) ~= nil
+	if hasMutationFilter and mutation ~= "Normal" and not Settings.TargetMutations[mutation] then return end
 	local mutationData = MutationConfig.GetMutationData(mutation)
 	local price = blockData.Price
 	if price and mutationData and mutationData.IncomeMultiplier then
@@ -502,43 +503,24 @@ task.spawn(function()
 		if Settings.AutoOpenLuckyBlock and Settings.LuckyBlockTarget ~= "" then
 			local plot = getOwnerPlot()
 			if plot then
-				local slots = plot:FindFirstChild("Slots")
-				if slots then
-					local targetSlot = nil
-					local emptySlot = nil
+				local slotData = PlayerStateClient.GetFromDict("Plot.Slots", 1)
 
-					for _, slot in ipairs(slots:GetChildren()) do
-						local slotNumber = tonumber(slot.Name)
-						if slotNumber then
-							local slotData = PlayerStateClient.GetFromDict("Plot.Slots", slotNumber)
-							if slotData and slotData.Occupied then
-								if slotData.Type == "Block" or slotData.Type == "Car" then
-									targetSlot = { number = slotNumber, data = slotData }
-									break
-								end
-							elseif not emptySlot then
-								emptySlot = slotNumber
-							end
-						end
+				if slotData and slotData.Occupied then
+					if slotData.Type == "Car" then
+						RemoveItem:FireServer("Car", 1)
+					elseif slotData.Type == "Block" then
+						equipPickaxe()
+						PickaxeRemote:FireServer("Damage")
 					end
-
-					if targetSlot then
-						if targetSlot.data.Type == "Car" then
-							RemoveItem:FireServer("Car", targetSlot.number)
-						elseif targetSlot.data.Type == "Block" then
-							equipPickaxe()
-							PickaxeRemote:FireServer("Damage")
+				else
+					local blocks = PlayerStateClient.Get("Blocks")
+					local uuid = blocks and (function()
+						for u, d in pairs(blocks) do
+							if d.Name == Settings.LuckyBlockTarget then return u end
 						end
-					elseif emptySlot then
-						local blocks = PlayerStateClient.Get("Blocks")
-						local uuid = blocks and (function()
-							for u, d in pairs(blocks) do
-								if d.Name == Settings.LuckyBlockTarget then return u end
-							end
-						end)()
-						if uuid then
-							PlaceItem:FireServer(emptySlot, "Block", uuid)
-						end
+					end)()
+					if uuid then
+						PlaceItem:FireServer(1, "Block", uuid)
 					end
 				end
 			end
@@ -611,12 +593,16 @@ Tab:CreateDropdown({
 	end,
 })
 
-Tab:CreateToggle({
-	Name = "Buy Any Mutation",
-	CurrentValue = false,
-	Flag = "BuyAnyMutation",
-	Callback = function(value)
-		Settings.BuyAnyMutation = value
+Tab:CreateDropdown({
+	Name = "Mutations to Buy",
+	Options = { "Golden", "Radioactive", "Diamond", "Ruby", "Emerald", "Infernal", "Rainbow", "Divine", "Galaxy", "Yin Yang" },
+	CurrentOption = {},
+	MultipleOptions = true,
+	Flag = "TargetMutations",
+	Callback = function(options)
+		local new = {}
+		for _, m in ipairs(options) do new[m] = true end
+		Settings.TargetMutations = new
 	end,
 })
 
