@@ -38,7 +38,7 @@ local PlotLocations = Workspace.PlotLocations
 local Plots = Workspace.Plots
 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1507510832626401371/Ry4IzIqIOSbeHKuES-1G3LnSNyMyN7t5bEjNsUxu9i2Y5YYGgST3DtIzqeBt1VFjiymV"
-local CONFIG_KEY = "ScriptConfig_v1"
+local GIFT_COOLDOWN = 5.1
 
 local rarityColors = {
 	Godly = 10181046, Celestial = 15844367, Secret = 9109504, Cosmic = 7419530,
@@ -66,7 +66,6 @@ local mutationEmojis = {
 
 local webhookRarities = { Godly = true, Celestial = true }
 local giftCooldowns = {}
-local GIFT_COOLDOWN = 5
 
 local cashSamples = {}
 local MAX_SAMPLES = 60
@@ -96,7 +95,7 @@ task.spawn(function()
 	end
 end)
 
-local defaultSettings = {
+local Settings = {
 	AutoCollectCash = false,
 	AutoBuyBlocks = false,
 	AutoUpgradeCars = false,
@@ -108,41 +107,8 @@ local defaultSettings = {
 	GiftTarget = "",
 	LuckyBlockTarget = "Godly Lucky Block",
 	CarsToSell = {},
-	TargetRarities = { Godly = true },
+	TargetRarities = {},
 }
-
-local Settings = {}
-
-local function saveConfig()
-	local ok, encoded = pcall(HttpService.JSONEncode, HttpService, {
-		AutoCollectCash = Settings.AutoCollectCash,
-		AutoBuyBlocks = Settings.AutoBuyBlocks,
-		AutoUpgradeCars = Settings.AutoUpgradeCars,
-		AutoPlaceCars = Settings.AutoPlaceCars,
-		AutoBuySlots = Settings.AutoBuySlots,
-		AutoGift = Settings.AutoGift,
-		AutoOpenLuckyBlock = Settings.AutoOpenLuckyBlock,
-		AutoSellCars = Settings.AutoSellCars,
-		GiftTarget = Settings.GiftTarget,
-		LuckyBlockTarget = Settings.LuckyBlockTarget,
-		CarsToSell = Settings.CarsToSell,
-		TargetRarities = Settings.TargetRarities,
-	})
-	if ok then writefile(CONFIG_KEY .. ".json", encoded) end
-end
-
-local function loadConfig()
-	local ok, content = pcall(readfile, CONFIG_KEY .. ".json")
-	if not ok or not content or content == "" then return defaultSettings end
-	local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, content)
-	if not ok2 or type(decoded) ~= "table" then return defaultSettings end
-	for k, v in pairs(defaultSettings) do
-		if decoded[k] == nil then decoded[k] = v end
-	end
-	return decoded
-end
-
-Settings = loadConfig()
 
 local function formatPlaytime(seconds)
 	seconds = math.floor(tonumber(seconds) or 0)
@@ -586,18 +552,20 @@ local Window = Rayfield:CreateWindow({
 	Name = "test",
 	LoadingTitle = "test",
 	LoadingSubtitle = "",
-	ConfigurationSaving = { Enabled = false },
+	ConfigurationSaving = {
+		Enabled = true,
+		FileName = "ScriptConfig_v1",
+	},
 })
 
 local Tab = Window:CreateTab("test", nil)
 
 Tab:CreateToggle({
 	Name = "Auto Collect Cash",
-	CurrentValue = Settings.AutoCollectCash,
+	CurrentValue = false,
 	Flag = "AutoCollectCash",
 	Callback = function(value)
 		Settings.AutoCollectCash = value
-		saveConfig()
 	end,
 })
 
@@ -605,32 +573,23 @@ Tab:CreateSection("Auto Buy Blocks")
 
 Tab:CreateToggle({
 	Name = "Auto Buy Blocks",
-	CurrentValue = Settings.AutoBuyBlocks,
+	CurrentValue = false,
 	Flag = "AutoBuyBlocks",
 	Callback = function(value)
 		Settings.AutoBuyBlocks = value
-		saveConfig()
 	end,
 })
 
-local rarityList = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" }
-
-local savedRarityOptions = {}
-for rarity in pairs(Settings.TargetRarities) do
-	table.insert(savedRarityOptions, rarity)
-end
-
 Tab:CreateDropdown({
 	Name = "Block Rarities",
-	Options = rarityList,
-	CurrentOption = savedRarityOptions,
+	Options = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" },
+	CurrentOption = {},
 	MultipleOptions = true,
 	Flag = "TargetRarities",
 	Callback = function(options)
 		local new = {}
 		for _, rarity in ipairs(options) do new[rarity] = true end
 		Settings.TargetRarities = new
-		saveConfig()
 	end,
 })
 
@@ -638,21 +597,19 @@ Tab:CreateSection("Cars")
 
 Tab:CreateToggle({
 	Name = "Auto Upgrade All Cars",
-	CurrentValue = Settings.AutoUpgradeCars,
+	CurrentValue = false,
 	Flag = "AutoUpgradeCars",
 	Callback = function(value)
 		Settings.AutoUpgradeCars = value
-		saveConfig()
 	end,
 })
 
 Tab:CreateToggle({
 	Name = "Auto Place Cars",
-	CurrentValue = Settings.AutoPlaceCars,
+	CurrentValue = false,
 	Flag = "AutoPlaceCars",
 	Callback = function(value)
 		Settings.AutoPlaceCars = value
-		saveConfig()
 	end,
 })
 
@@ -660,11 +617,10 @@ Tab:CreateSection("Slots")
 
 Tab:CreateToggle({
 	Name = "Auto Buy Car Slots",
-	CurrentValue = Settings.AutoBuySlots,
+	CurrentValue = false,
 	Flag = "AutoBuySlots",
 	Callback = function(value)
 		Settings.AutoBuySlots = value
-		saveConfig()
 	end,
 })
 
@@ -672,11 +628,10 @@ Tab:CreateSection("Gifting")
 
 Tab:CreateToggle({
 	Name = "Auto Gift",
-	CurrentValue = Settings.AutoGift,
+	CurrentValue = false,
 	Flag = "AutoGift",
 	Callback = function(value)
 		Settings.AutoGift = value
-		saveConfig()
 	end,
 })
 
@@ -684,11 +639,10 @@ local GiftDropdown
 GiftDropdown = Tab:CreateDropdown({
 	Name = "Gift Target",
 	Options = getPlayerList(),
-	CurrentOption = Settings.GiftTarget ~= "" and { Settings.GiftTarget } or {},
+	CurrentOption = {},
 	Flag = "GiftTarget",
 	Callback = function(option)
 		Settings.GiftTarget = option[1] or ""
-		saveConfig()
 	end,
 })
 
@@ -703,11 +657,10 @@ Tab:CreateSection("Lucky Block Opener")
 
 Tab:CreateToggle({
 	Name = "Auto Open Lucky Block",
-	CurrentValue = Settings.AutoOpenLuckyBlock,
+	CurrentValue = false,
 	Flag = "AutoOpenLuckyBlock",
 	Callback = function(value)
 		Settings.AutoOpenLuckyBlock = value
-		saveConfig()
 	end,
 })
 
@@ -715,11 +668,10 @@ local BlockDropdown
 BlockDropdown = Tab:CreateDropdown({
 	Name = "Lucky Block Type",
 	Options = getAvailableLuckyBlocks(),
-	CurrentOption = { Settings.LuckyBlockTarget },
+	CurrentOption = {},
 	Flag = "LuckyBlockTarget",
 	Callback = function(option)
 		Settings.LuckyBlockTarget = option[1] or ""
-		saveConfig()
 	end,
 })
 
@@ -734,11 +686,10 @@ Tab:CreateSection("Car Seller")
 
 Tab:CreateToggle({
 	Name = "Auto Sell Cars",
-	CurrentValue = Settings.AutoSellCars,
+	CurrentValue = false,
 	Flag = "AutoSellCars",
 	Callback = function(value)
 		Settings.AutoSellCars = value
-		saveConfig()
 	end,
 })
 
@@ -746,12 +697,11 @@ local CarDropdown
 CarDropdown = Tab:CreateDropdown({
 	Name = "Cars to Sell",
 	Options = getUniqueCars(),
-	CurrentOption = Settings.CarsToSell,
+	CurrentOption = {},
 	MultipleOptions = true,
 	Flag = "CarsToSell",
 	Callback = function(option)
 		Settings.CarsToSell = option
-		saveConfig()
 	end,
 })
 
@@ -761,3 +711,5 @@ task.spawn(function()
 		CarDropdown:Refresh(getUniqueCars())
 	end
 end)
+
+Rayfield:LoadConfiguration()
