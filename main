@@ -107,7 +107,7 @@ local Settings = {
 	GiftTarget = "",
 	LuckyBlockTarget = "Godly Lucky Block",
 	CarsToSell = {},
-	TargetRarities = {},
+	TargetRarities = { Godly = true },
 }
 
 local function formatPlaytime(seconds)
@@ -583,7 +583,7 @@ Tab:CreateToggle({
 Tab:CreateDropdown({
 	Name = "Block Rarities",
 	Options = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" },
-	CurrentOption = {},
+	CurrentOption = { "Godly" },
 	MultipleOptions = true,
 	Flag = "TargetRarities",
 	Callback = function(options)
