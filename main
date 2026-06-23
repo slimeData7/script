@@ -30,6 +30,10 @@ local BuyBlock = ReplicatedStorage.Remotes.Block.BuyBlock
 local UpgradeCar = ReplicatedStorage.Remotes.Car.UpgradeCar
 local PlaceItem = ReplicatedStorage.Remotes.Plot.PlaceItem
 local BuyUpgrade = ReplicatedStorage.Remotes.BuyUpgrade
+local GiftRemote = ReplicatedStorage.Remotes.GiftRemote
+local RemoveItem = ReplicatedStorage.Remotes.Plot.RemoveItem
+local PickaxeRemote = ReplicatedStorage.Remotes.Pickaxe.PickaxeRemote
+local SellCar = ReplicatedStorage.Remotes.Car.SellCar
 
 local localPlayer = Players.LocalPlayer
 local PlotLocations = Workspace.PlotLocations
@@ -38,8 +42,16 @@ local Plots = Workspace.Plots
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1507510832626401371/Ry4IzIqIOSbeHKuES-1G3LnSNyMyN7t5bEjNsUxu9i2Y5YYGgST3DtIzqeBt1VFjiymV"
 
 local rarityColors = {
-	Celestial = 15844367,
 	Godly = 10181046,
+	Celestial = 15844367,
+	Secret = 9109504,
+	Cosmic = 7419530,
+	Mythic = 11920639,
+	Legendary = 16755200,
+	Epic = 9699539,
+	Rare = 3447003,
+	Uncommon = 42495,
+	Common = 9807270,
 }
 
 local mutationColors = {
@@ -58,23 +70,10 @@ local mutationColors = {
 	Hacker      = 65280,
 }
 
-local mutationMultipliers = {
-	Normal      = nil,
-	Golden      = "2x better",
-	Radioactive = "2.5x better",
-	Diamond     = "3x better",
-	Ruby        = "3.5x better",
-	Emerald     = "4x better",
-	Infernal    = "4.5x better",
-	Rainbow     = "5x better",
-	Divine      = "4.5x better",
-	Galaxy      = "5x better",
-	["Yin Yang"]= "3.5x better",
-	Admin       = "2.5x better",
-	Hacker      = "5x better",
-}
-
 local webhookRarities = { Godly = true, Celestial = true }
+local lastCashSnapshot = { cash = 0, time = tick() }
+local giftCooldowns = {}
+local GIFT_COOLDOWN = 0.5
 
 local function formatPlaytime(seconds)
 	seconds = math.floor(tonumber(seconds) or 0)
@@ -86,14 +85,17 @@ local function formatPlaytime(seconds)
 	return string.format("%dm", m)
 end
 
-local function getBlockCount(blockName)
+local function getBlockCount(blockName, justObtainedUuid)
 	local blocks = PlayerStateClient.Get("Blocks")
-	if not blocks then return 0 end
+	if not blocks then return justObtainedUuid and 1 or 0 end
 	local total = 0
-	for _, entry in pairs(blocks) do
+	for uuid, entry in pairs(blocks) do
 		if entry.Name == blockName then
 			total = total + (entry.Quantity or 1)
 		end
+	end
+	if justObtainedUuid and not blocks[justObtainedUuid] then
+		total = total + 1
 	end
 	return total
 end
@@ -102,18 +104,18 @@ local function formatPrice(n)
 	n = tonumber(n) or 0
 	local sign = n < 0 and "-" or ""
 	n = math.abs(n)
-
-	if n >= 1e12 then
-		return sign .. string.format("%.2fT", n / 1e12)
+	if n >= 1e15 then
+		return sign .. string.format("%.2fQi", n / 1e15)
+	elseif n >= 1e12 then
+		return sign .. string.format("%.2fQa", n / 1e12)
 	elseif n >= 1e9 then
-		return sign .. string.format("%.2fB", n / 1e9)
+		return sign .. string.format("%.2fT", n / 1e9)
 	elseif n >= 1e6 then
-		return sign .. string.format("%.2fM", n / 1e6)
+		return sign .. string.format("%.2fB", n / 1e6)
 	elseif n >= 1e3 then
-		return sign .. string.format("%.2fK", n / 1e3)
+		return sign .. string.format("%.2fM", n / 1e3)
 	end
-
-	return sign .. string.format("%d", n)
+	return sign .. string.format("%.2fK", n)
 end
 
 local ICON_CACHE = {}
@@ -121,9 +123,7 @@ local ICON_CACHE = {}
 local function resolveCarIcon(blockName)
 	local drops = ItemConfig.Drops[blockName]
 	if not drops then return nil end
-
-	local rarest = nil
-	local lowestWeight = math.huge
+	local rarest, lowestWeight = nil, math.huge
 	for _, drop in ipairs(drops) do
 		if drop.Weight < lowestWeight then
 			lowestWeight = drop.Weight
@@ -131,17 +131,11 @@ local function resolveCarIcon(blockName)
 		end
 	end
 	if not rarest then return nil end
-
 	local carData = CarConfig.GetCarData(rarest.Name)
 	if not carData or not carData.Icon then return nil end
-
 	local assetNumber = string.match(tostring(carData.Icon), "rbxassetid://(%d+)")
 	if not assetNumber then return nil end
-
-	if ICON_CACHE[assetNumber] then
-		return ICON_CACHE[assetNumber]
-	end
-
+	if ICON_CACHE[assetNumber] then return ICON_CACHE[assetNumber] end
 	local thumbnailUrl = nil
 	for attempt = 1, 10 do
 		pcall(function()
@@ -150,4 +144,597 @@ local function resolveCarIcon(blockName)
 				Method = "GET"
 			})
 			if r and r.Success then
-				local decoded = Http
+				local decoded = HttpService:JSONDecode(r.Body)
+				if decoded and decoded.data and decoded.data[1] and decoded.data[1].imageUrl and decoded.data[1].imageUrl ~= "" then
+					thumbnailUrl = decoded.data[1].imageUrl
+				end
+			end
+		end)
+		if thumbnailUrl then break end
+		if attempt < 10 then task.wait(0.5) end
+	end
+	if thumbnailUrl then ICON_CACHE[assetNumber] = thumbnailUrl end
+	return thumbnailUrl
+end
+
+local function sendWebhook(blockName, mutation, rarity, price, uuid)
+	task.spawn(function()
+		local thumbnailUrl = resolveCarIcon(blockName)
+		local cash = PlayerStateClient.Get("Cash") or 0
+		local playtime = PlayerStateClient.Get("TotalPlayTime") or 0
+		local pickaxe = PlayerStateClient.Get("EquippedPickaxe") or "Unknown"
+		local blockCount = getBlockCount(blockName, uuid)
+		local currentEvent = PlayerStateClient.Get("CurrentEvent") or "None"
+		
+		local timeDiff = tick() - lastCashSnapshot.time
+		local cashDiff = cash - lastCashSnapshot.cash
+		local cashPerHour = 0
+		if timeDiff > 0 then
+			cashPerHour = (cashDiff / timeDiff) * 3600
+		end
+		lastCashSnapshot = { cash = cash, time = tick() }
+		
+		local cars = PlayerStateClient.Get("Cars") or {}
+		local carsCount = 0
+		for _ in pairs(cars) do carsCount = carsCount + 1 end
+		local totalSlots = (PlayerStateClient.GetPath("UpgradeLevel") or 9)
+		local carSlots = tostring(carsCount) .. "/" .. totalSlots
+		
+		local fields = {
+			{ name = "Username", value = localPlayer.Name, inline = true },
+			{ name = "Block + Owned", value = blockName .. " (" .. blockCount .. "x)", inline = true },
+			{ name = "Pickaxe", value = pickaxe, inline = true },
+		}
+		
+		if mutation and mutation ~= "Normal" then
+			table.insert(fields, { name = "Mutation", value = mutation, inline = true })
+		end
+		
+		table.insert(fields, { name = "Price", value = formatPrice(price), inline = true })
+		table.insert(fields, { name = "Cash", value = formatPrice(cash), inline = true })
+		table.insert(fields, { name = "Cash/Hour", value = formatPrice(cashPerHour), inline = true })
+		table.insert(fields, { name = "Playtime", value = formatPlaytime(playtime), inline = true })
+		table.insert(fields, { name = "Cars", value = carSlots, inline = true })
+		
+		if currentEvent ~= "None" then
+			table.insert(fields, { name = "Event", value = currentEvent, inline = true })
+		end
+		
+		local embedColor = mutationColors[mutation] or rarityColors[rarity] or 3066993
+		local embed = {
+			title = rarity .. " Block Purchased",
+			color = embedColor,
+			fields = fields,
+			timestamp = DateTime.now():ToIsoDate(),
+		}
+		if thumbnailUrl then embed.thumbnail = { url = thumbnailUrl } end
+		local payload = { embeds = { embed } }
+		local ok, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+		if not ok then return end
+		pcall(function()
+			request({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = encoded
+			})
+		end)
+	end)
+end
+
+local function autoGiftAll(targetPlayer)
+	if not targetPlayer then return end
+	local now = tick()
+	local containers = { localPlayer:FindFirstChild("Backpack"), localPlayer.Character }
+	for _, container in ipairs(containers) do
+		if not container then continue end
+		for _, tool in ipairs(container:GetChildren()) do
+			if tool:IsA("Tool") and tool:GetAttribute("ItemType") == "Car" then
+				local uuid = tool:GetAttribute("UUID")
+				if uuid and now - (giftCooldowns[uuid] or 0) >= GIFT_COOLDOWN then
+					GiftRemote:FireServer(targetPlayer, "Car", uuid)
+					giftCooldowns[uuid] = now
+				end
+			end
+		end
+	end
+end
+
+local function getPlayerList()
+	local list = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= localPlayer then
+			table.insert(list, p.Name)
+		end
+	end
+	return list
+end
+
+local function getAvailableLuckyBlocks()
+	local blocks = PlayerStateClient.Get("Blocks")
+	if not blocks then return {} end
+	local seen, list = {}, {}
+	for _, entry in pairs(blocks) do
+		if entry.Name and entry.Name:match("Lucky Block") and not seen[entry.Name] then
+			seen[entry.Name] = true
+			table.insert(list, entry.Name)
+		end
+	end
+	table.sort(list)
+	return list
+end
+
+local function getUniqueCars()
+	local cars = PlayerStateClient.Get("Cars")
+	if not cars then return {} end
+	local seen, list = {}, {}
+	for _, car in pairs(cars) do
+		if car.Name and not seen[car.Name] then
+			seen[car.Name] = true
+			table.insert(list, car.Name)
+		end
+	end
+	table.sort(list)
+	return list
+end
+
+local function equipPickaxe()
+	local char = localPlayer.Character
+	if not char then return end
+	local tool = char:FindFirstChildWhichIsA("Tool")
+	if tool and tool:GetAttribute("ItemType") == "Pickaxe" then return end
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+	for _, v in ipairs(localPlayer.Backpack:GetChildren()) do
+		if v:IsA("Tool") and v:GetAttribute("ItemType") == "Pickaxe" then
+			humanoid:EquipTool(v)
+			return
+		end
+	end
+end
+
+local placeRarityRank = {
+	Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5,
+	Mythic = 6, Cosmic = 7, Secret = 8, Celestial = 9, Godly = 10, Exclusive = 11,
+}
+
+local rarityOrder = { "Godly", "Celestial", "Secret", "Cosmic" }
+local rarityRank = { Godly = 4, Celestial = 3, Secret = 2, Cosmic = 1 }
+
+local Settings = {
+	AutoCollectCash = false,
+	AutoBuyBlocks = false,
+	AutoUpgradeCars = false,
+	AutoPlaceCars = false,
+	AutoBuySlots = false,
+	AutoGift = false,
+	AutoOpenLuckyBlock = false,
+	AutoSellCars = false,
+	GiftTarget = "",
+	LuckyBlockTarget = "Godly Lucky Block",
+	CarsToSell = {},
+	TargetRarities = { Godly = true },
+	BuyAnyMutation = true,
+}
+
+local function getOwnerPlot()
+	for _, location in ipairs(PlotLocations:GetChildren()) do
+		if location:IsA("BasePart") and location:GetAttribute("OwnerId") == localPlayer.UserId then
+			return Plots:FindFirstChild(location.Name)
+		end
+	end
+end
+
+task.spawn(function()
+	while true do
+		if Settings.AutoCollectCash then
+			local plot = getOwnerPlot()
+			if plot then
+				local slots = plot:FindFirstChild("Slots")
+				if slots then
+					for _, slot in ipairs(slots:GetChildren()) do
+						local slotNumber = tonumber(slot.Name)
+						if slotNumber then
+							local slotData = PlayerStateClient.GetFromDict("Plot.Slots", slotNumber)
+							if slotData and slotData.Occupied and slotData.Type == "Car" and slotData.Cash and slotData.Cash > 0 then
+								CollectCash:FireServer(slotNumber)
+							end
+						end
+					end
+				end
+			end
+		end
+		task.wait(0.5)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if Settings.AutoUpgradeCars then
+			local plot = getOwnerPlot()
+			if plot then
+				local slots = plot:FindFirstChild("Slots")
+				if slots then
+					local candidates = {}
+					for _, slot in ipairs(slots:GetChildren()) do
+						local slotNumber = tonumber(slot.Name)
+						if slotNumber then
+							local slotData = PlayerStateClient.GetFromDict("Plot.Slots", slotNumber)
+							if slotData and slotData.Occupied and slotData.Type == "Car" then
+								local carData = CarConfig.GetCarData(slotData.Name)
+								if carData and rarityRank[carData.Rarity] then
+									local level = slotData.Level or 1
+									local cost = CarConfig.CalculateUpgradeCost(slotData.Name, level, slotData.Mutation)
+									if cost then
+										table.insert(candidates, {
+											slotNumber = slotNumber,
+											cost = cost,
+											rank = rarityRank[carData.Rarity],
+										})
+									end
+								end
+							end
+						end
+					end
+					table.sort(candidates, function(a, b) return a.rank > b.rank end)
+					local cash = PlayerStateClient.Get("Cash") or 0
+					for _, candidate in ipairs(candidates) do
+						if candidate.cost <= cash then
+							UpgradeCar:FireServer(candidate.slotNumber)
+							cash = cash - candidate.cost
+						end
+					end
+				end
+			end
+		end
+		task.wait(0.5)
+	end
+end)
+
+SpawnBlock.OnClientEvent:Connect(function(owner, blockName, mutation, uuid)
+	if not Settings.AutoBuyBlocks then return end
+	if owner ~= localPlayer then return end
+	local blockData = BlockConfig.GetBlockData(blockName)
+	if not blockData or not Settings.TargetRarities[blockData.Rarity] then return end
+	local mutationData = MutationConfig.GetMutationData(mutation)
+	local price = blockData.Price
+	if price and mutationData and mutationData.IncomeMultiplier then
+		price = price * mutationData.IncomeMultiplier
+	end
+	BuyBlock:FireServer(uuid)
+	if webhookRarities[blockData.Rarity] then
+		sendWebhook(blockName, mutation, blockData.Rarity, price, uuid)
+	end
+end)
+
+local function getEmptySlots(plot)
+	local empty = {}
+	local upgradeLevel = PlayerStateClient.GetPath("UpgradeLevel") or 9
+	local slots = plot:FindFirstChild("Slots")
+	if not slots then return empty end
+	for _, slot in ipairs(slots:GetChildren()) do
+		local slotNumber = tonumber(slot.Name)
+		if slotNumber and slotNumber <= upgradeLevel then
+			local slotData = PlayerStateClient.GetFromDict("Plot.Slots", slotNumber)
+			if not slotData or (not slotData.Occupied and not slotData.Pending) then
+				table.insert(empty, slotNumber)
+			end
+		end
+	end
+	table.sort(empty)
+	return empty
+end
+
+local function getCarTools()
+	local tools = {}
+	local function scan(container)
+		if not container then return end
+		for _, item in ipairs(container:GetChildren()) do
+			if item:IsA("Tool") and item:GetAttribute("ItemType") == "Car" then
+				local carData = CarConfig.GetCarData(item.Name)
+				if carData then
+					table.insert(tools, { tool = item, rank = placeRarityRank[carData.Rarity] or 0 })
+				end
+			end
+		end
+	end
+	scan(localPlayer:FindFirstChild("Backpack"))
+	scan(localPlayer.Character)
+	table.sort(tools, function(a, b) return a.rank > b.rank end)
+	return tools
+end
+
+task.spawn(function()
+	while true do
+		if Settings.AutoPlaceCars then
+			local plot = getOwnerPlot()
+			if plot then
+				local emptySlots = getEmptySlots(plot)
+				local carTools = getCarTools()
+				for i, slotNumber in ipairs(emptySlots) do
+					local entry = carTools[i]
+					if not entry then break end
+					local uuid = entry.tool:GetAttribute("UUID")
+					local itemType = entry.tool:GetAttribute("ItemType")
+					if uuid and itemType then
+						PlaceItem:FireServer(slotNumber, itemType, uuid)
+					end
+				end
+			end
+		end
+		task.wait(1)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if Settings.AutoBuySlots then
+			local currentLevel = PlayerStateClient.GetPath("UpgradeLevel") or 9
+			local nextLevel = currentLevel + 1
+			local cost = UpgradeConfig.GetUpgradeCost(nextLevel)
+			if cost then
+				local cash = PlayerStateClient.Get("Cash") or 0
+				if cash >= cost then
+					BuyUpgrade:FireServer(nextLevel)
+				end
+			end
+		end
+		task.wait(0.5)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if Settings.AutoGift and Settings.GiftTarget ~= "" then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Name == Settings.GiftTarget then
+					autoGiftAll(p)
+					break
+				end
+			end
+		end
+		task.wait(1)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if Settings.AutoOpenLuckyBlock and Settings.LuckyBlockTarget ~= "" then
+			local plot = getOwnerPlot()
+			if plot then
+				local slots = plot:FindFirstChild("Slots")
+				if slots then
+					local targetSlot = nil
+					local emptySlot = nil
+
+					for _, slot in ipairs(slots:GetChildren()) do
+						local slotNumber = tonumber(slot.Name)
+						if slotNumber then
+							local slotData = PlayerStateClient.GetFromDict("Plot.Slots", slotNumber)
+							if slotData and slotData.Occupied then
+								if slotData.Type == "Block" or slotData.Type == "Car" then
+									targetSlot = { number = slotNumber, data = slotData }
+									break
+								end
+							elseif not emptySlot then
+								emptySlot = slotNumber
+							end
+						end
+					end
+
+					if targetSlot then
+						if targetSlot.data.Type == "Car" then
+							RemoveItem:FireServer("Car", targetSlot.number)
+						elseif targetSlot.data.Type == "Block" then
+							equipPickaxe()
+							PickaxeRemote:FireServer("Damage")
+						end
+					elseif emptySlot then
+						local blocks = PlayerStateClient.Get("Blocks")
+						local uuid = blocks and (function()
+							for u, d in pairs(blocks) do
+								if d.Name == Settings.LuckyBlockTarget then return u end
+							end
+						end)()
+						if uuid then
+							PlaceItem:FireServer(emptySlot, "Block", uuid)
+						end
+					end
+				end
+			end
+		end
+		task.wait(0.8)
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if Settings.AutoSellCars then
+			for _, carName in ipairs(Settings.CarsToSell) do
+				local cars = PlayerStateClient.Get("Cars")
+				if cars then
+					for uuid, car in pairs(cars) do
+						if car.Name == carName and (car.Mutation == nil or car.Mutation == "Normal") then
+							SellCar:FireServer(uuid)
+						end
+					end
+				end
+			end
+		end
+		task.wait(0.1)
+	end
+end)
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Window = Rayfield:CreateWindow({
+	Name = "test",
+	LoadingTitle = "test",
+	LoadingSubtitle = "",
+	ConfigurationSaving = { Enabled = false },
+})
+
+local Tab = Window:CreateTab("test", nil)
+
+Tab:CreateToggle({
+	Name = "Auto Collect Cash",
+	CurrentValue = false,
+	Flag = "AutoCollectCash",
+	Callback = function(value)
+		Settings.AutoCollectCash = value
+	end,
+})
+
+Tab:CreateSection("Auto Buy Blocks")
+
+Tab:CreateToggle({
+	Name = "Auto Buy Blocks",
+	CurrentValue = false,
+	Flag = "AutoBuyBlocks",
+	Callback = function(value)
+		Settings.AutoBuyBlocks = value
+	end,
+})
+
+local rarityList = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" }
+
+Tab:CreateDropdown({
+	Name = "Block Rarities",
+	Options = rarityList,
+	CurrentOption = { "Godly" },
+	MultipleOptions = true,
+	Flag = "TargetRarities",
+	Callback = function(options)
+		local new = {}
+		for _, rarity in ipairs(options) do new[rarity] = true end
+		Settings.TargetRarities = new
+	end,
+})
+
+Tab:CreateToggle({
+	Name = "Buy Any Mutation",
+	CurrentValue = true,
+	Flag = "BuyAnyMutation",
+	Callback = function(value)
+		Settings.BuyAnyMutation = value
+	end,
+})
+
+Tab:CreateSection("Cars")
+
+Tab:CreateToggle({
+	Name = "Auto Upgrade All Cars",
+	CurrentValue = false,
+	Flag = "AutoUpgradeCars",
+	Callback = function(value)
+		Settings.AutoUpgradeCars = value
+	end,
+})
+
+Tab:CreateToggle({
+	Name = "Auto Place Cars",
+	CurrentValue = false,
+	Flag = "AutoPlaceCars",
+	Callback = function(value)
+		Settings.AutoPlaceCars = value
+	end,
+})
+
+Tab:CreateSection("Slots")
+
+Tab:CreateToggle({
+	Name = "Auto Buy Car Slots",
+	CurrentValue = false,
+	Flag = "AutoBuySlots",
+	Callback = function(value)
+		Settings.AutoBuySlots = value
+	end,
+})
+
+Tab:CreateSection("Gifting")
+
+Tab:CreateToggle({
+	Name = "Auto Gift",
+	CurrentValue = false,
+	Flag = "AutoGift",
+	Callback = function(value)
+		Settings.AutoGift = value
+	end,
+})
+
+local GiftDropdown
+GiftDropdown = Tab:CreateDropdown({
+	Name = "Gift Target",
+	Options = getPlayerList(),
+	CurrentOption = { "" },
+	Flag = "GiftTarget",
+	Callback = function(option)
+		Settings.GiftTarget = option[1] or ""
+	end,
+})
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		GiftDropdown:Refresh(getPlayerList())
+	end
+end)
+
+Tab:CreateSection("Lucky Block Opener")
+
+Tab:CreateToggle({
+	Name = "Auto Open Lucky Block",
+	CurrentValue = false,
+	Flag = "AutoOpenLuckyBlock",
+	Callback = function(value)
+		Settings.AutoOpenLuckyBlock = value
+	end,
+})
+
+local BlockDropdown
+BlockDropdown = Tab:CreateDropdown({
+	Name = "Lucky Block Type",
+	Options = getAvailableLuckyBlocks(),
+	CurrentOption = { "Godly Lucky Block" },
+	Flag = "LuckyBlockTarget",
+	Callback = function(option)
+		Settings.LuckyBlockTarget = option[1] or ""
+	end,
+})
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		BlockDropdown:Refresh(getAvailableLuckyBlocks())
+	end
+end)
+
+Tab:CreateSection("Car Seller")
+
+Tab:CreateToggle({
+	Name = "Auto Sell Cars",
+	CurrentValue = false,
+	Flag = "AutoSellCars",
+	Callback = function(value)
+		Settings.AutoSellCars = value
+	end,
+})
+
+local CarDropdown
+CarDropdown = Tab:CreateDropdown({
+	Name = "Cars to Sell",
+	Options = getUniqueCars(),
+	CurrentOption = {},
+	MultipleOptions = true,
+	Flag = "CarsToSell",
+	Callback = function(option)
+		Settings.CarsToSell = option
+	end,
+})
+
+task.spawn(function()
+	while true do
+		task.wait(5)
+		CarDropdown:Refresh(getUniqueCars())
+	end
+end)
