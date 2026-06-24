@@ -66,32 +66,22 @@ local mutationEmojis = {
 
 local webhookRarities = { Godly = true, Celestial = true }
 local giftCooldowns = {}
-
-local cashSamples = {}
-local MAX_SAMPLES = 60
-
-local function recordCashSample()
-	local cash = PlayerStateClient.Get("Cash") or 0
-	table.insert(cashSamples, { cash = cash, time = tick() })
-	if #cashSamples > MAX_SAMPLES then
-		table.remove(cashSamples, 1)
-	end
-end
+local lastCashSnapshot = { cash = 0, time = tick() }
 
 local function getCashPerHour()
-	if #cashSamples < 2 then return 0 end
-	local oldest = cashSamples[1]
-	local newest = cashSamples[#cashSamples]
-	local timeDiff = newest.time - oldest.time
-	if timeDiff <= 0 then return 0 end
-	return ((newest.cash - oldest.cash) / timeDiff) * 3600
+	local now = tick()
+	local timeDiff = now - lastCashSnapshot.time
+	if timeDiff < 60 then return 0 end
+	local cash = PlayerStateClient.Get("Cash") or 0
+	local cashDiff = cash - lastCashSnapshot.cash
+	lastCashSnapshot = { cash = cash, time = now }
+	return (cashDiff / timeDiff) * 3600
 end
 
 task.spawn(function()
-	recordCashSample()
 	while true do
 		task.wait(60)
-		recordCashSample()
+		getCashPerHour()
 	end
 end)
 
@@ -104,6 +94,11 @@ local Settings = {
 	AutoGift = false,
 	AutoOpenLuckyBlock = false,
 	AutoSellCars = false,
+	AutoBuyRainbowCelestial = false,
+	AutoBuyInfernalCelestial = false,
+	AutoBuyRainbowSecret = false,
+	OptimizeGpu = false,
+	DestroyOtherPlots = false,
 	GiftTarget = "",
 	LuckyBlockTarget = "Godly Lucky Block",
 	CarsToSell = {},
@@ -331,6 +326,43 @@ local function getOwnerPlot()
 	end
 end
 
+local function destroyOtherPlots()
+	for _, plot in ipairs(Plots:GetChildren()) do
+		local location = PlotLocations:FindFirstChild(plot.Name)
+		if location and location:GetAttribute("OwnerId") ~= localPlayer.UserId then
+			plot:Destroy()
+		end
+	end
+end
+
+local function destroyMapChildren()
+	local map = Workspace:FindFirstChild("Map")
+	if not map then return end
+	for _, child in ipairs(map:GetChildren()) do
+		if child.Name ~= "World" then
+			child:Destroy()
+		end
+	end
+end
+
+task.spawn(function()
+	while true do
+		if Settings.OptimizeGpu then
+			game:GetService("RunService"):Set3dRenderingEnabled(true)
+		else
+			game:GetService("RunService"):Set3dRenderingEnabled(false)
+		end
+		task.wait(1)
+	end
+end)
+
+task.spawn(function()
+	if Settings.DestroyOtherPlots then
+		destroyOtherPlots()
+		destroyMapChildren()
+	end
+end)
+
 task.spawn(function()
 	while true do
 		if Settings.AutoCollectCash then
@@ -393,17 +425,33 @@ task.spawn(function()
 end)
 
 SpawnBlock.OnClientEvent:Connect(function(owner, blockName, mutation, uuid)
-	if not Settings.AutoBuyBlocks then return end
 	if owner ~= localPlayer then return end
 	local blockData = BlockConfig.GetBlockData(blockName)
-	if not blockData or not Settings.TargetRarities[blockData.Rarity] then return end
+	if not blockData then return end
+
 	local mutationData = MutationConfig.GetMutationData(mutation)
 	local price = blockData.Price
 	if price and mutationData and mutationData.IncomeMultiplier then
 		price *= mutationData.IncomeMultiplier
 	end
-	BuyBlock:FireServer(uuid)
-	if webhookRarities[blockData.Rarity] then
+
+	local bought = false
+
+	if Settings.AutoBuyBlocks and Settings.TargetRarities[blockData.Rarity] then
+		BuyBlock:FireServer(uuid)
+		bought = true
+	elseif Settings.AutoBuyRainbowCelestial and blockData.Rarity == "Celestial" and mutation == "Rainbow" then
+		BuyBlock:FireServer(uuid)
+		bought = true
+	elseif Settings.AutoBuyInfernalCelestial and blockData.Rarity == "Celestial" and mutation == "Infernal" then
+		BuyBlock:FireServer(uuid)
+		bought = true
+	elseif Settings.AutoBuyRainbowSecret and blockData.Rarity == "Secret" and mutation == "Rainbow" then
+		BuyBlock:FireServer(uuid)
+		bought = true
+	end
+
+	if bought and webhookRarities[blockData.Rarity] then
 		sendWebhook(blockName, mutation, blockData.Rarity, price, uuid)
 	end
 end)
@@ -558,9 +606,9 @@ local Window = Rayfield:CreateWindow({
 	},
 })
 
-local Tab = Window:CreateTab("test", nil)
+local MainTab = Window:CreateTab("main", nil)
 
-Tab:CreateToggle({
+MainTab:CreateToggle({
 	Name = "Auto Collect Cash",
 	CurrentValue = false,
 	Flag = "AutoCollectCash",
@@ -569,64 +617,22 @@ Tab:CreateToggle({
 	end,
 })
 
-Tab:CreateSection("Auto Buy Blocks")
-
-Tab:CreateToggle({
-	Name = "Auto Buy Blocks",
+MainTab:CreateToggle({
+	Name = "Destroy Other Plots",
 	CurrentValue = false,
-	Flag = "AutoBuyBlocks",
+	Flag = "DestroyOtherPlots",
 	Callback = function(value)
-		Settings.AutoBuyBlocks = value
+		Settings.DestroyOtherPlots = value
+		if value then
+			destroyOtherPlots()
+			destroyMapChildren()
+		end
 	end,
 })
 
-Tab:CreateDropdown({
-	Name = "Block Rarities",
-	Options = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" },
-	CurrentOption = { "Godly" },
-	MultipleOptions = true,
-	Flag = "TargetRarities",
-	Callback = function(options)
-		local new = {}
-		for _, rarity in ipairs(options) do new[rarity] = true end
-		Settings.TargetRarities = new
-	end,
-})
+MainTab:CreateSection("Gifting")
 
-Tab:CreateSection("Cars")
-
-Tab:CreateToggle({
-	Name = "Auto Upgrade All Cars",
-	CurrentValue = false,
-	Flag = "AutoUpgradeCars",
-	Callback = function(value)
-		Settings.AutoUpgradeCars = value
-	end,
-})
-
-Tab:CreateToggle({
-	Name = "Auto Place Cars",
-	CurrentValue = false,
-	Flag = "AutoPlaceCars",
-	Callback = function(value)
-		Settings.AutoPlaceCars = value
-	end,
-})
-
-Tab:CreateSection("Slots")
-
-Tab:CreateToggle({
-	Name = "Auto Buy Car Slots",
-	CurrentValue = false,
-	Flag = "AutoBuySlots",
-	Callback = function(value)
-		Settings.AutoBuySlots = value
-	end,
-})
-
-Tab:CreateSection("Gifting")
-
-Tab:CreateToggle({
+MainTab:CreateToggle({
 	Name = "Auto Gift",
 	CurrentValue = false,
 	Flag = "AutoGift",
@@ -636,7 +642,7 @@ Tab:CreateToggle({
 })
 
 local GiftDropdown
-GiftDropdown = Tab:CreateDropdown({
+GiftDropdown = MainTab:CreateDropdown({
 	Name = "Gift Target",
 	Options = getPlayerList(),
 	CurrentOption = {},
@@ -653,9 +659,84 @@ task.spawn(function()
 	end
 end)
 
-Tab:CreateSection("Lucky Block Opener")
+MainTab:CreateSection("Slots")
 
-Tab:CreateToggle({
+MainTab:CreateToggle({
+	Name = "Auto Buy Car Slots",
+	CurrentValue = false,
+	Flag = "AutoBuySlots",
+	Callback = function(value)
+		Settings.AutoBuySlots = value
+	end,
+})
+
+local BlockTab = Window:CreateTab("blocks", nil)
+
+BlockTab:CreateToggle({
+	Name = "Optimize GPU",
+	CurrentValue = false,
+	Flag = "OptimizeGpu",
+	Callback = function(value)
+		Settings.OptimizeGpu = value
+	end,
+})
+
+BlockTab:CreateSection("Auto Buy Blocks")
+
+BlockTab:CreateToggle({
+	Name = "Auto Buy Blocks",
+	CurrentValue = false,
+	Flag = "AutoBuyBlocks",
+	Callback = function(value)
+		Settings.AutoBuyBlocks = value
+	end,
+})
+
+BlockTab:CreateDropdown({
+	Name = "Block Rarities",
+	Options = { "Godly", "Celestial", "Secret", "Cosmic", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common" },
+	CurrentOption = { "Godly" },
+	MultipleOptions = true,
+	Flag = "TargetRarities",
+	Callback = function(options)
+		local new = {}
+		for _, rarity in ipairs(options) do new[rarity] = true end
+		Settings.TargetRarities = new
+	end,
+})
+
+BlockTab:CreateSection("Hardcoded Blocks")
+
+BlockTab:CreateToggle({
+	Name = "Auto Buy Rainbow Celestial",
+	CurrentValue = false,
+	Flag = "AutoBuyRainbowCelestial",
+	Callback = function(value)
+		Settings.AutoBuyRainbowCelestial = value
+	end,
+})
+
+BlockTab:CreateToggle({
+	Name = "Auto Buy Infernal Celestial",
+	CurrentValue = false,
+	Flag = "AutoBuyInfernalCelestial",
+	Callback = function(value)
+		Settings.AutoBuyInfernalCelestial = value
+	end,
+})
+
+BlockTab:CreateToggle({
+	Name = "Auto Buy Rainbow Secret",
+	CurrentValue = false,
+	Flag = "AutoBuyRainbowSecret",
+	Callback = function(value)
+		Settings.AutoBuyRainbowSecret = value
+	end,
+})
+
+BlockTab:CreateSection("Lucky Block Opener")
+
+BlockTab:CreateToggle({
 	Name = "Auto Open Lucky Block",
 	CurrentValue = false,
 	Flag = "AutoOpenLuckyBlock",
@@ -665,7 +746,7 @@ Tab:CreateToggle({
 })
 
 local BlockDropdown
-BlockDropdown = Tab:CreateDropdown({
+BlockDropdown = BlockTab:CreateDropdown({
 	Name = "Lucky Block Type",
 	Options = getAvailableLuckyBlocks(),
 	CurrentOption = {},
@@ -682,9 +763,29 @@ task.spawn(function()
 	end
 end)
 
-Tab:CreateSection("Car Seller")
+local CarsTab = Window:CreateTab("cars", nil)
 
-Tab:CreateToggle({
+CarsTab:CreateToggle({
+	Name = "Auto Upgrade All Cars",
+	CurrentValue = false,
+	Flag = "AutoUpgradeCars",
+	Callback = function(value)
+		Settings.AutoUpgradeCars = value
+	end,
+})
+
+CarsTab:CreateToggle({
+	Name = "Auto Place Cars",
+	CurrentValue = false,
+	Flag = "AutoPlaceCars",
+	Callback = function(value)
+		Settings.AutoPlaceCars = value
+	end,
+})
+
+CarsTab:CreateSection("Car Seller")
+
+CarsTab:CreateToggle({
 	Name = "Auto Sell Cars",
 	CurrentValue = false,
 	Flag = "AutoSellCars",
@@ -694,7 +795,7 @@ Tab:CreateToggle({
 })
 
 local CarDropdown
-CarDropdown = Tab:CreateDropdown({
+CarDropdown = CarsTab:CreateDropdown({
 	Name = "Cars to Sell",
 	Options = getUniqueCars(),
 	CurrentOption = {},
