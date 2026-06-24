@@ -14,6 +14,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local PlayerStateClient = require(ReplicatedStorage.Libraries.PlayerState.PlayerStateClient)
 local BlockConfig = require(ReplicatedStorage.Shared.Configurations.Block)
@@ -347,24 +348,6 @@ end
 
 task.spawn(function()
 	while true do
-		if Settings.OptimizeGpu then
-			game:GetService("RunService"):Set3dRenderingEnabled(true)
-		else
-			game:GetService("RunService"):Set3dRenderingEnabled(false)
-		end
-		task.wait(1)
-	end
-end)
-
-task.spawn(function()
-	if Settings.DestroyOtherPlots then
-		destroyOtherPlots()
-		destroyMapChildren()
-	end
-end)
-
-task.spawn(function()
-	while true do
 		if Settings.AutoCollectCash then
 			local plot = getOwnerPlot()
 			if plot then
@@ -618,6 +601,16 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateToggle({
+	Name = "Optimize GPU",
+	CurrentValue = false,
+	Flag = "OptimizeGpu",
+	Callback = function(value)
+		Settings.OptimizeGpu = value
+		RunService:Set3dRenderingEnabled(not value)
+	end,
+})
+
+MainTab:CreateToggle({
 	Name = "Destroy Other Plots",
 	CurrentValue = false,
 	Flag = "DestroyOtherPlots",
@@ -671,15 +664,6 @@ MainTab:CreateToggle({
 })
 
 local BlockTab = Window:CreateTab("blocks", nil)
-
-BlockTab:CreateToggle({
-	Name = "Optimize GPU",
-	CurrentValue = false,
-	Flag = "OptimizeGpu",
-	Callback = function(value)
-		Settings.OptimizeGpu = value
-	end,
-})
 
 BlockTab:CreateSection("Auto Buy Blocks")
 
