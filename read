@@ -8,18 +8,22 @@ Config.MaxPlayers            = Config.MaxPlayers            or 9
 Config.TargetEvents          = Config.TargetEvents          or { "Rainbow", "Infernal" }
 Config.StopOnEventServer     = Config.StopOnEventServer     ~= nil and Config.StopOnEventServer     or false
 Config.MinTimeRemaining      = Config.MinTimeRemaining      or 0
-Config.EventWebhook          = Config.EventWebhook          or ""
-Config.UserId                = Config.UserId                or ""
+Config.GitHub                = Config.GitHub                or {}
 Config.PersistAcrossRejoins  = Config.PersistAcrossRejoins  ~= nil and Config.PersistAcrossRejoins  or true
 Config.Debug                 = Config.Debug                 ~= nil and Config.Debug                 or false
 
+local GH = Config.GitHub
+GH.Enabled  = GH.Enabled ~= nil and GH.Enabled or false
+GH.Branch   = GH.Branch or "main"
+GH.FilePath = GH.FilePath or "events.json"
+
 local MAX_VISITED_ENTRIES    = 800
 local MAX_FAILED_ENTRIES     = 400
-local MAX_EVENT_SEEN_ENTRIES = 200
 local QUEUE_REFILL_COOLDOWN  = 45
 local CLAIM_TTL              = 30
 local FETCH_LOCK_TTL         = 40
 local FILE_MAX_AGE           = 1800
+local GH_MAX_RETRIES         = 4
 
 local EVENT_COLORS = {
     Golden      = 16774234,
@@ -45,6 +49,8 @@ local RunService        = game:GetService("RunService")
 local TweenService      = game:GetService("TweenService")
 local Lighting          = game:GetService("Lighting")
 
+local httpRequest = request or http_request or (syn and syn.request)
+
 local lp      = Players.LocalPlayer
 local placeId = game.PlaceId
 local accountKey = tostring(lp.UserId)
@@ -56,7 +62,6 @@ local FILE_SHARED_QUEUE    = "sh_queue.json"
 local FILE_SHARED_CLAIMED  = "sh_claimed.json"
 local FILE_SHARED_VISITED  = "sh_visited.json"
 local FILE_SHARED_FAILED   = "sh_failed.json"
-local FILE_SHARED_EVENT    = "sh_event_seen.json"
 local FILE_FETCH_LOCK      = "sh_fetch_lock.json"
 local FILE_ACCOUNT_STATS   = "acct_stats_" .. accountKey .. ".json"
 
@@ -83,6 +88,54 @@ end
 local function jdec(s)
     local ok, r = pcall(HttpService.JSONDecode, HttpService, s)
     return ok and r or nil
+end
+
+local function base64Encode(data)
+    local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local result = {}
+    for i = 1, #data, 3 do
+        local byte1 = string.byte(data, i)
+        local byte2 = string.byte(data, i + 1) or 0
+        local byte3 = string.byte(data, i + 2) or 0
+        local enc1 = math.floor(byte1 / 4)
+        local enc2 = (byte1 % 4) * 16 + math.floor(byte2 / 16)
+        local enc3 = (byte2 % 16) * 4 + math.floor(byte3 / 64)
+        local enc4 = byte3 % 64
+        table.insert(result, b64chars:sub(enc1 + 1, enc1 + 1))
+        table.insert(result, b64chars:sub(enc2 + 1, enc2 + 1))
+        table.insert(result, b64chars:sub(enc3 + 1, enc3 + 1))
+        table.insert(result, b64chars:sub(enc4 + 1, enc4 + 1))
+    end
+    local padding = (3 - (#data % 3)) % 3
+    for i = 1, padding do
+        result[#result - i + 1] = '='
+    end
+    return table.concat(result)
+end
+
+local function base64Decode(data)
+    local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local lookup = {}
+    for i = 1, #b64chars do lookup[b64chars:sub(i, i)] = i - 1 end
+    data = data:gsub("[^" .. b64chars .. "=]", "")
+    local result = {}
+    for i = 1, #data, 4 do
+        local c1 = lookup[data:sub(i, i)] or 0
+        local c2 = lookup[data:sub(i + 1, i + 1)] or 0
+        local c3 = lookup[data:sub(i + 2, i + 2)]
+        local c4 = lookup[data:sub(i + 3, i + 3)]
+        local b1 = c1 * 4 + math.floor(c2 / 16)
+        table.insert(result, string.char(b1))
+        if c3 then
+            local b2 = (c2 % 16) * 16 + math.floor(c3 / 4)
+            table.insert(result, string.char(b2))
+        end
+        if c4 then
+            local b3 = (c3 % 4) * 64 + c4
+            table.insert(result, string.char(b3))
+        end
+    end
+    return table.concat(result)
 end
 
 local function fileRead(path)
@@ -140,7 +193,8 @@ local function evictOldest(tbl, maxSize)
 end
 
 local function safeRequest(options)
-    local ok, r = pcall(request, options)
+    if not httpRequest then return nil end
+    local ok, r = pcall(httpRequest, options)
     if not ok then dprint("request err:", r) return nil end
     return r
 end
@@ -202,28 +256,6 @@ end
 local function markFailed(jobId)
     localFailed[jobId] = { at = ts() }
     if Config.PersistAcrossRejoins then saveSharedFailed() end
-end
-
-local function isVisited(jobId)
-    if localVisited[jobId] then return true end
-    if not Config.PersistAcrossRejoins then return false end
-    local sv = readJSON(FILE_SHARED_VISITED)
-    if sv and type(sv.data) == "table" and sv.data[jobId] then
-        localVisited[jobId] = sv.data[jobId]
-        return true
-    end
-    return false
-end
-
-local function isFailed(jobId)
-    if localFailed[jobId] then return true end
-    if not Config.PersistAcrossRejoins then return false end
-    local sf = readJSON(FILE_SHARED_FAILED)
-    if sf and type(sf.data) == "table" and sf.data[jobId] then
-        localFailed[jobId] = sf.data[jobId]
-        return true
-    end
-    return false
 end
 
 local function tryClaimServer(jobId)
@@ -444,25 +476,6 @@ local function shouldRefetch()
     return false
 end
 
-local function hasEventBeenReported(jobId)
-    local d = readJSON(FILE_SHARED_EVENT)
-    if not d or type(d.data) ~= "table" then return false end
-    return d.data[jobId] ~= nil
-end
-
-local function markEventReported(jobId)
-    local d = readJSON(FILE_SHARED_EVENT)
-    local data = {}
-    if d and type(d.data) == "table" then
-        for k, v in pairs(d.data) do
-            if k ~= "_ts" then data[k] = v end
-        end
-    end
-    data[jobId] = { at = ts() }
-    evictOldest(data, MAX_EVENT_SEEN_ENTRIES)
-    writeJSON(FILE_SHARED_EVENT, wrap({ data = data }))
-end
-
 local function getEventInfo()
     local name = ReplicatedStorage:GetAttribute("CurrentEvent")
     local endTime = ReplicatedStorage:GetAttribute("CurrentEventEndTime")
@@ -477,45 +490,96 @@ local function formatTime(sec)
     return string.format("%02d:%02d", math.floor(sec / 60), math.floor(sec % 60))
 end
 
-local function buildEmbed(eventName, remaining, jobId)
-    local playerCount = #Players:GetPlayers()
-    local maxPlayers  = Players.MaxPlayers
-    local joinLink    = string.format("https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s", placeId, jobId)
-    local execCmd     = string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s", game:GetService("Players").LocalPlayer)', placeId, jobId)
+local function ghContentsUrl()
+    return string.format("https://api.github.com/repos/%s/%s/contents/%s", GH.Owner, GH.Repo, GH.FilePath)
+end
+
+local function ghHeaders()
     return {
-        embeds = {{
-            color  = EVENT_COLORS[eventName] or 65280,
-            title  = eventName .. " Event Found",
-            fields = {
-                { name = "Event",             value = eventName,                                               inline = true  },
-                { name = "Time Remaining",    value = formatTime(remaining),                                   inline = true  },
-                { name = "Players",           value = tostring(playerCount) .. " / " .. tostring(maxPlayers), inline = true  },
-                { name = "Click to Join",     value = "[Join Server](" .. joinLink .. ")",                     inline = true  },
-                { name = "Paste in Executor", value = "```\n" .. execCmd .. "\n```",                           inline = false },
-            },
-        }}
+        ["Authorization"] = "token " .. GH.Token,
+        ["User-Agent"]    = "Roblox",
+        ["Content-Type"]  = "application/json",
     }
 end
 
-local function fireWebhook(url, payload)
-    if not url or url == "" then return end
-    local body = jenc(payload)
-    if not body then return end
-    safeRequest({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+local function ghFetchCurrent()
+    local res = safeRequest({
+        Url     = ghContentsUrl() .. "?ref=" .. GH.Branch,
+        Method  = "GET",
+        Headers = ghHeaders(),
+    })
+    if not res then return nil, nil, false end
+    if res.StatusCode == 404 then return {}, nil, true end
+    if res.StatusCode ~= 200 then
+        dprint("GH GET failed:", res.StatusCode, res.Body)
+        return nil, nil, false
+    end
+    local meta = jdec(res.Body)
+    if not meta then return nil, nil, false end
+    local decoded = meta.content and base64Decode((meta.content:gsub("%s", ""))) or ""
+    local parsed = jdec(decoded)
+    if type(parsed) ~= "table" then parsed = {} end
+    return parsed, meta.sha, true
 end
 
-local function sendEventWebhook(eventName, remaining, jobId)
-    if Config.EventWebhook == "" then return end
-    if hasEventBeenReported(jobId) then
-        dprint("Event already reported for", jobId)
-        return
+local function pruneAndMerge(list, entry)
+    local now = os.time()
+    local out = {}
+    local replaced = false
+    for _, e in ipairs(list) do
+        if type(e) == "table" and e.jobId and (e.endTime or 0) > now then
+            if e.jobId == entry.jobId then
+                table.insert(out, entry)
+                replaced = true
+            else
+                table.insert(out, e)
+            end
+        end
     end
-    markEventReported(jobId)
-    local payload = buildEmbed(eventName, remaining, jobId)
-    if Config.UserId and Config.UserId ~= "" then
-        payload.content = "<@" .. Config.UserId .. ">"
+    if not replaced then table.insert(out, entry) end
+    return out
+end
+
+local function uploadEventToGitHub(eventName, remaining)
+    if not GH.Enabled or not GH.Token or GH.Token == "" then return end
+    local entry = {
+        jobId   = game.JobId,
+        event   = eventName,
+        endTime = os.time() + remaining,
+    }
+    for attempt = 1, GH_MAX_RETRIES do
+        local list, sha, ok = ghFetchCurrent()
+        if not ok then
+            dprint("GH fetch failed, retry", attempt)
+            task.wait(2 ^ attempt)
+        else
+            local merged = pruneAndMerge(list, entry)
+            local body = {
+                message = "event: " .. eventName .. " @ " .. entry.jobId:sub(1, 8),
+                content = base64Encode(jenc(merged)),
+                branch  = GH.Branch,
+            }
+            if sha then body.sha = sha end
+            local put = safeRequest({
+                Url     = ghContentsUrl(),
+                Method  = "PUT",
+                Headers = ghHeaders(),
+                Body    = jenc(body),
+            })
+            if put and (put.StatusCode == 200 or put.StatusCode == 201) then
+                dprint("GH upload ok")
+                return true
+            elseif put and put.StatusCode == 409 then
+                dprint("GH 409 conflict, retry", attempt)
+                task.wait(0.5 + math.random() * 1.5)
+            else
+                dprint("GH PUT failed:", put and put.StatusCode, put and put.Body)
+                task.wait(2 ^ attempt)
+            end
+        end
     end
-    fireWebhook(Config.EventWebhook, payload)
+    dprint("GH upload gave up after", GH_MAX_RETRIES, "tries")
+    return false
 end
 
 local function checkAndHandleEvent()
@@ -533,7 +597,7 @@ local function checkAndHandleEvent()
     localStats.eventsFound = localStats.eventsFound + 1
     localStats.status      = name:upper() .. " " .. formatTime(remaining)
     saveAccountStats()
-    task.spawn(sendEventWebhook, name, remaining, game.JobId)
+    task.spawn(uploadEventToGitHub, name, remaining)
     if Config.StopOnEventServer then
         hopLock           = true
         localStats.status = "Stopped on " .. name
@@ -738,43 +802,9 @@ local function buildUI()
     local eventVal  = makeCard(cardsRow, 3, 4, "EVENTS FOUND",    PALETTE.gold)
     local queueVal  = makeCard(cardsRow, 4, 4, "QUEUE",           PALETTE.accent)
 
-    local filesBar = make("Frame", {
-        Size             = UDim2.new(1, -40, 0, 56),
-        Position         = UDim2.fromOffset(20, 292),
-        BackgroundColor3 = PALETTE.panel,
-        BorderSizePixel  = 0,
-        ZIndex           = 4,
-    }, content)
-    corner(filesBar, 12)
-    stroke(filesBar, PALETTE.border, 1)
-
-    make("TextLabel", {
-        Size                   = UDim2.new(0.15, 0, 1, 0),
-        Position               = UDim2.fromOffset(20, 0),
-        BackgroundTransparency = 1,
-        Text                   = "FILES",
-        TextColor3             = PALETTE.dim,
-        Font                   = Enum.Font.Gotham,
-        TextSize               = 12,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        ZIndex                 = 5,
-    }, filesBar)
-
-    make("TextLabel", {
-        Size                   = UDim2.new(0.8, 0, 1, 0),
-        Position               = UDim2.new(0.18, 0, 0, 0),
-        BackgroundTransparency = 1,
-        Text                   = FILE_SHARED_QUEUE .. "   /   " .. FILE_SHARED_CLAIMED .. "   /   " .. FILE_SHARED_VISITED .. "   /   " .. FILE_ACCOUNT_STATS,
-        TextColor3             = PALETTE.accent,
-        Font                   = Enum.Font.GothamBold,
-        TextSize               = 13,
-        TextXAlignment         = Enum.TextXAlignment.Left,
-        ZIndex                 = 5,
-    }, filesBar)
-
     local statusBar = make("Frame", {
         Size             = UDim2.new(1, -40, 0, 60),
-        Position         = UDim2.fromOffset(20, 364),
+        Position         = UDim2.fromOffset(20, 292),
         BackgroundColor3 = PALETTE.panel,
         BorderSizePixel  = 0,
         ZIndex           = 4,
