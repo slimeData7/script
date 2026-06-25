@@ -1,1 +1,962 @@
+local Config = getgenv().ServerHop or {}
+Config.FetchMode             = Config.FetchMode             or "CursorFetch"
+Config.RetryFailedTeleport   = Config.RetryFailedTeleport   ~= nil and Config.RetryFailedTeleport   or true
+Config.MaxTeleportRetries    = Config.MaxTeleportRetries    or 3
+Config.SkipVisitedServers    = Config.SkipVisitedServers    ~= nil and Config.SkipVisitedServers    or true
+Config.MinPlayers            = Config.MinPlayers            or 1
+Config.MaxPlayers            = Config.MaxPlayers            or 9
+Config.TargetEvents          = Config.TargetEvents          or { "Rainbow", "Infernal" }
+Config.StopOnEventServer     = Config.StopOnEventServer     ~= nil and Config.StopOnEventServer     or false
+Config.MinTimeRemaining      = Config.MinTimeRemaining      or 0
+Config.EventWebhook          = Config.EventWebhook          or ""
+Config.UserId                = Config.UserId                or ""
+Config.PersistAcrossRejoins  = Config.PersistAcrossRejoins  ~= nil and Config.PersistAcrossRejoins  or true
+Config.Debug                 = Config.Debug                 ~= nil and Config.Debug                 or false
 
+local MAX_VISITED_ENTRIES    = 800
+local MAX_FAILED_ENTRIES     = 400
+local MAX_EVENT_SEEN_ENTRIES = 200
+local QUEUE_REFILL_COOLDOWN  = 45
+local CLAIM_TTL              = 30
+local FETCH_LOCK_TTL         = 40
+local FILE_MAX_AGE           = 1800
+
+local EVENT_COLORS = {
+    Golden      = 16774234,
+    Radioactive = 10747201,
+    Diamond     = 65518,
+    Ruby        = 16711680,
+    Emerald     = 1310983,
+    Infernal    = 16726804,
+    Rainbow     = 9851135,
+}
+
+local MAX_SERVERS_PER_MODE = {
+    NormalFetch   = 100,
+    CursorFetch   = 300,
+    AdvancedFetch = 1000,
+}
+
+local Players           = game:GetService("Players")
+local TeleportService   = game:GetService("TeleportService")
+local HttpService       = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local Lighting          = game:GetService("Lighting")
+
+local lp      = Players.LocalPlayer
+local placeId = game.PlaceId
+local accountKey = tostring(lp.UserId)
+
+local targetSet = {}
+for _, name in ipairs(Config.TargetEvents) do targetSet[name] = true end
+
+local FILE_SHARED_QUEUE    = "sh_queue.json"
+local FILE_SHARED_CLAIMED  = "sh_claimed.json"
+local FILE_SHARED_VISITED  = "sh_visited.json"
+local FILE_SHARED_FAILED   = "sh_failed.json"
+local FILE_SHARED_EVENT    = "sh_event_seen.json"
+local FILE_FETCH_LOCK      = "sh_fetch_lock.json"
+local FILE_ACCOUNT_STATS   = "acct_stats_" .. accountKey .. ".json"
+
+local hopLock = false
+
+local localVisited  = {}
+local localFailed   = {}
+local localStats    = { totalJoined = 0, totalFailed = 0, eventsFound = 0, status = "Starting..." }
+local localQueueSize = 0
+
+local function dprint(...)
+    if Config.Debug then print("[SH:" .. accountKey:sub(-4) .. "]", ...) end
+end
+
+local function ts()
+    return os.time()
+end
+
+local function jenc(v)
+    local ok, r = pcall(HttpService.JSONEncode, HttpService, v)
+    return ok and r or nil
+end
+
+local function jdec(s)
+    local ok, r = pcall(HttpService.JSONDecode, HttpService, s)
+    return ok and r or nil
+end
+
+local function fileRead(path)
+    if not (isfile and isfile(path)) then return nil end
+    local ok, c = pcall(readfile, path)
+    return (ok and c and c ~= "") and c or nil
+end
+
+local function fileWrite(path, content)
+    if writefile then pcall(writefile, path, content) end
+end
+
+local function fileDelete(path)
+    if isfile and isfile(path) and delfile then pcall(delfile, path) end
+end
+
+local function readJSON(path)
+    local c = fileRead(path)
+    if not c then return nil end
+    return jdec(c)
+end
+
+local function writeJSON(path, data)
+    local s = jenc(data)
+    if s then fileWrite(path, s) end
+end
+
+local function isStale(t, maxAge)
+    if type(t) ~= "table" or type(t._ts) ~= "number" then return true end
+    return (ts() - t._ts) > (maxAge or FILE_MAX_AGE)
+end
+
+local function wrap(data)
+    data._ts = ts()
+    return data
+end
+
+local function evictOldest(tbl, maxSize)
+    local keys = {}
+    for k in pairs(tbl) do
+        if k ~= "_ts" then table.insert(keys, k) end
+    end
+    if #keys <= maxSize then return end
+    table.sort(keys, function(a, b)
+        local va = tbl[a]
+        local vb = tbl[b]
+        local ta = type(va) == "table" and (va.at or 0) or 0
+        local tb = type(vb) == "table" and (vb.at or 0) or 0
+        return ta < tb
+    end)
+    local toRemove = #keys - maxSize
+    for i = 1, toRemove do
+        tbl[keys[i]] = nil
+    end
+end
+
+local function safeRequest(options)
+    local ok, r = pcall(request, options)
+    if not ok then dprint("request err:", r) return nil end
+    return r
+end
+
+local function loadAccountStats()
+    local d = readJSON(FILE_ACCOUNT_STATS)
+    if d and not isStale(d) then
+        localStats.totalJoined = d.totalJoined or 0
+        localStats.totalFailed = d.totalFailed or 0
+        localStats.eventsFound = d.eventsFound or 0
+    end
+end
+
+local function saveAccountStats()
+    writeJSON(FILE_ACCOUNT_STATS, wrap({
+        totalJoined = localStats.totalJoined,
+        totalFailed = localStats.totalFailed,
+        eventsFound = localStats.eventsFound,
+    }))
+end
+
+local function loadLocalSets()
+    if not Config.PersistAcrossRejoins then return end
+    local sv = readJSON(FILE_SHARED_VISITED)
+    if sv and not isStale(sv) then
+        local d = sv.data
+        if type(d) == "table" then
+            for id, v in pairs(d) do
+                if id ~= "_ts" then localVisited[id] = v end
+            end
+        end
+    end
+    local sf = readJSON(FILE_SHARED_FAILED)
+    if sf and not isStale(sf) then
+        local d = sf.data
+        if type(d) == "table" then
+            for id, v in pairs(d) do
+                if id ~= "_ts" then localFailed[id] = v end
+            end
+        end
+    end
+end
+
+local function saveSharedVisited()
+    evictOldest(localVisited, MAX_VISITED_ENTRIES)
+    writeJSON(FILE_SHARED_VISITED, wrap({ data = localVisited }))
+end
+
+local function saveSharedFailed()
+    evictOldest(localFailed, MAX_FAILED_ENTRIES)
+    writeJSON(FILE_SHARED_FAILED, wrap({ data = localFailed }))
+end
+
+local function markVisited(jobId)
+    localVisited[jobId] = { at = ts() }
+    if Config.PersistAcrossRejoins then saveSharedVisited() end
+end
+
+local function markFailed(jobId)
+    localFailed[jobId] = { at = ts() }
+    if Config.PersistAcrossRejoins then saveSharedFailed() end
+end
+
+local function isVisited(jobId)
+    if localVisited[jobId] then return true end
+    if not Config.PersistAcrossRejoins then return false end
+    local sv = readJSON(FILE_SHARED_VISITED)
+    if sv and type(sv.data) == "table" and sv.data[jobId] then
+        localVisited[jobId] = sv.data[jobId]
+        return true
+    end
+    return false
+end
+
+local function isFailed(jobId)
+    if localFailed[jobId] then return true end
+    if not Config.PersistAcrossRejoins then return false end
+    local sf = readJSON(FILE_SHARED_FAILED)
+    if sf and type(sf.data) == "table" and sf.data[jobId] then
+        localFailed[jobId] = sf.data[jobId]
+        return true
+    end
+    return false
+end
+
+local function tryClaimServer(jobId)
+    local claimed = readJSON(FILE_SHARED_CLAIMED)
+    local now = ts()
+    local data = {}
+    if claimed and type(claimed.data) == "table" then
+        for id, entry in pairs(claimed.data) do
+            if id ~= "_ts" and type(entry) == "table" and (now - (entry.at or 0)) < CLAIM_TTL then
+                data[id] = entry
+            end
+        end
+    end
+    if data[jobId] then return false end
+    data[jobId] = { by = accountKey, at = now }
+    writeJSON(FILE_SHARED_CLAIMED, wrap({ data = data }))
+    task.wait(0.15)
+    local verify = readJSON(FILE_SHARED_CLAIMED)
+    if verify and type(verify.data) == "table" then
+        local entry = verify.data[jobId]
+        if entry and entry.by == accountKey then return true end
+    end
+    return false
+end
+
+local function releaseClaim(jobId)
+    local claimed = readJSON(FILE_SHARED_CLAIMED)
+    if not claimed or type(claimed.data) ~= "table" then return end
+    claimed.data[jobId] = nil
+    writeJSON(FILE_SHARED_CLAIMED, wrap({ data = claimed.data }))
+end
+
+local function tryAcquireFetchLock()
+    local lock = readJSON(FILE_FETCH_LOCK)
+    local now = ts()
+    if lock and type(lock.holder) == "string" then
+        local age = now - (lock.at or 0)
+        if age < FETCH_LOCK_TTL then
+            dprint("Fetch lock held by", lock.holder, "age", age)
+            return false
+        end
+    end
+    writeJSON(FILE_FETCH_LOCK, { holder = accountKey, at = now })
+    task.wait(0.2)
+    local verify = readJSON(FILE_FETCH_LOCK)
+    if verify and verify.holder == accountKey then return true end
+    return false
+end
+
+local function releaseFetchLock()
+    local lock = readJSON(FILE_FETCH_LOCK)
+    if lock and lock.holder == accountKey then
+        fileDelete(FILE_FETCH_LOCK)
+    end
+end
+
+local function getSharedQueueSize()
+    local q = readJSON(FILE_SHARED_QUEUE)
+    if q and type(q.data) == "table" then return #q.data end
+    return 0
+end
+
+local function fetchPage(cursor)
+    local url = string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true",
+        placeId
+    )
+    if cursor and cursor ~= "" then url = url .. "&cursor=" .. cursor end
+    local res = safeRequest({ Url = url, Method = "GET" })
+    if not res or not res.Body then return nil, nil end
+    if res.StatusCode == 429 then
+        dprint("429 rate limit on fetch")
+        task.wait(10)
+        return nil, nil
+    end
+    if res.StatusCode ~= 200 then return nil, nil end
+    local d = jdec(res.Body)
+    if not d then return nil, nil end
+    return d.data, d.nextPageCursor
+end
+
+local function fetchServers()
+    local collected = {}
+    local seen      = {}
+    local cursor    = nil
+    local pages     = 0
+    local maxCount  = MAX_SERVERS_PER_MODE[Config.FetchMode] or 300
+    local maxPages  = 1
+    if Config.FetchMode == "CursorFetch"   then maxPages = 3  end
+    if Config.FetchMode == "AdvancedFetch" then maxPages = 10 end
+
+    local sv = readJSON(FILE_SHARED_VISITED)
+    local sf = readJSON(FILE_SHARED_FAILED)
+    local sc = readJSON(FILE_SHARED_CLAIMED)
+    local sharedVisited = (sv and type(sv.data) == "table") and sv.data or {}
+    local sharedFailed  = (sf and type(sf.data) == "table") and sf.data or {}
+    local sharedClaimed = (sc and type(sc.data) == "table") and sc.data or {}
+    local now = ts()
+
+    repeat
+        local servers, nextCursor = fetchPage(cursor)
+        if not servers then break end
+        for _, server in ipairs(servers) do
+            local id = server.id
+            if id and not seen[id] then
+                seen[id] = true
+                local playing    = server.playing    or 0
+                local maxPlayers = server.maxPlayers or 0
+                local skip = false
+                if id == game.JobId                                             then skip = true end
+                if playing < Config.MinPlayers                                  then skip = true end
+                if playing >= maxPlayers                                        then skip = true end
+                if Config.MaxPlayers and playing > Config.MaxPlayers            then skip = true end
+                if Config.SkipVisitedServers and sharedVisited[id]              then skip = true end
+                if sharedFailed[id]                                             then skip = true end
+                if sharedClaimed[id] and (now - (sharedClaimed[id].at or 0)) < CLAIM_TTL then skip = true end
+                if not skip then
+                    table.insert(collected, id)
+                    if #collected >= maxCount then break end
+                end
+            end
+        end
+        cursor = nextCursor
+        pages  = pages + 1
+        if #collected >= maxCount then break end
+        if cursor then task.wait(0.5) end
+    until not cursor or cursor == "" or pages >= maxPages
+
+    return collected
+end
+
+local function refillSharedQueue()
+    if not tryAcquireFetchLock() then
+        dprint("Another account is fetching. Waiting.")
+        local waited = 0
+        repeat
+            task.wait(2)
+            waited = waited + 2
+        until getSharedQueueSize() >= 10 or waited >= FETCH_LOCK_TTL
+        return
+    end
+
+    localStats.status = "Fetching servers..."
+    dprint("Acquired fetch lock. Fetching.")
+
+    local newIds = fetchServers()
+    dprint("Fetched", #newIds, "servers")
+
+    local existing = readJSON(FILE_SHARED_QUEUE)
+    local existingSet = {}
+    local merged = {}
+
+    if existing and type(existing.data) == "table" and not isStale(existing) then
+        for _, id in ipairs(existing.data) do
+            if not existingSet[id] then
+                existingSet[id] = true
+                table.insert(merged, id)
+            end
+        end
+    end
+
+    for _, id in ipairs(newIds) do
+        if not existingSet[id] then
+            existingSet[id] = true
+            table.insert(merged, id)
+        end
+    end
+
+    writeJSON(FILE_SHARED_QUEUE, wrap({ data = merged, refetchAt = ts() + QUEUE_REFILL_COOLDOWN }))
+    releaseFetchLock()
+    localQueueSize = #merged
+end
+
+local function popFromSharedQueue()
+    local q = readJSON(FILE_SHARED_QUEUE)
+    if not q or type(q.data) ~= "table" or #q.data == 0 then return nil end
+
+    local sv = readJSON(FILE_SHARED_VISITED)
+    local sf = readJSON(FILE_SHARED_FAILED)
+    local sc = readJSON(FILE_SHARED_CLAIMED)
+    local sharedVisited = (sv and type(sv.data) == "table") and sv.data or {}
+    local sharedFailed  = (sf and type(sf.data) == "table") and sf.data or {}
+    local sharedClaimed = (sc and type(sc.data) == "table") and sc.data or {}
+    local now = ts()
+
+    local picked = nil
+    local remaining = {}
+
+    for _, id in ipairs(q.data) do
+        if not picked then
+            local skip = false
+            if Config.SkipVisitedServers and sharedVisited[id]                        then skip = true end
+            if sharedFailed[id]                                                        then skip = true end
+            if sharedClaimed[id] and (now - (sharedClaimed[id].at or 0)) < CLAIM_TTL then skip = true end
+            if not skip then
+                picked = id
+            else
+                table.insert(remaining, id)
+            end
+        else
+            table.insert(remaining, id)
+        end
+    end
+
+    if not picked then return nil end
+
+    writeJSON(FILE_SHARED_QUEUE, wrap({ data = remaining, refetchAt = q.refetchAt }))
+    localQueueSize = #remaining
+    return picked
+end
+
+local function shouldRefetch()
+    local q = readJSON(FILE_SHARED_QUEUE)
+    if not q then return true end
+    if isStale(q) then return true end
+    if type(q.data) == "table" and #q.data < 5 then return true end
+    if type(q.refetchAt) == "number" and ts() >= q.refetchAt then return true end
+    return false
+end
+
+local function hasEventBeenReported(jobId)
+    local d = readJSON(FILE_SHARED_EVENT)
+    if not d or type(d.data) ~= "table" then return false end
+    return d.data[jobId] ~= nil
+end
+
+local function markEventReported(jobId)
+    local d = readJSON(FILE_SHARED_EVENT)
+    local data = {}
+    if d and type(d.data) == "table" then
+        for k, v in pairs(d.data) do
+            if k ~= "_ts" then data[k] = v end
+        end
+    end
+    data[jobId] = { at = ts() }
+    evictOldest(data, MAX_EVENT_SEEN_ENTRIES)
+    writeJSON(FILE_SHARED_EVENT, wrap({ data = data }))
+end
+
+local function getEventInfo()
+    local name = ReplicatedStorage:GetAttribute("CurrentEvent")
+    local endTime = ReplicatedStorage:GetAttribute("CurrentEventEndTime")
+    if not name then return nil, 0 end
+    local remaining = endTime and (endTime - os.time()) or 0
+    return name, remaining
+end
+
+local function formatTime(sec)
+    sec = tonumber(sec)
+    if not sec or sec <= 0 then return "Ended" end
+    return string.format("%02d:%02d", math.floor(sec / 60), math.floor(sec % 60))
+end
+
+local function buildEmbed(eventName, remaining, jobId)
+    local playerCount = #Players:GetPlayers()
+    local maxPlayers  = Players.MaxPlayers
+    local joinLink    = string.format("https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s", placeId, jobId)
+    local execCmd     = string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, "%s", game:GetService("Players").LocalPlayer)', placeId, jobId)
+    return {
+        embeds = {{
+            color  = EVENT_COLORS[eventName] or 65280,
+            title  = eventName .. " Event Found",
+            fields = {
+                { name = "Event",             value = eventName,                                               inline = true  },
+                { name = "Time Remaining",    value = formatTime(remaining),                                   inline = true  },
+                { name = "Players",           value = tostring(playerCount) .. " / " .. tostring(maxPlayers), inline = true  },
+                { name = "Click to Join",     value = "[Join Server](" .. joinLink .. ")",                     inline = true  },
+                { name = "Paste in Executor", value = "```\n" .. execCmd .. "\n```",                           inline = false },
+            },
+        }}
+    }
+end
+
+local function fireWebhook(url, payload)
+    if not url or url == "" then return end
+    local body = jenc(payload)
+    if not body then return end
+    safeRequest({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
+end
+
+local function sendEventWebhook(eventName, remaining, jobId)
+    if Config.EventWebhook == "" then return end
+    if hasEventBeenReported(jobId) then
+        dprint("Event already reported for", jobId)
+        return
+    end
+    markEventReported(jobId)
+    local payload = buildEmbed(eventName, remaining, jobId)
+    if Config.UserId and Config.UserId ~= "" then
+        payload.content = "<@" .. Config.UserId .. ">"
+    end
+    fireWebhook(Config.EventWebhook, payload)
+end
+
+local function checkAndHandleEvent()
+    local name, remaining = getEventInfo()
+    if not name then return false end
+    if not targetSet[name] then
+        dprint("Event active but not targeted:", name)
+        return false
+    end
+    if Config.MinTimeRemaining > 0 and remaining < Config.MinTimeRemaining then
+        dprint("Event", name, "below min time:", remaining)
+        return false
+    end
+    print("[ServerHop] Target event! " .. name .. " | " .. formatTime(remaining))
+    localStats.eventsFound = localStats.eventsFound + 1
+    localStats.status      = name:upper() .. " " .. formatTime(remaining)
+    saveAccountStats()
+    task.spawn(sendEventWebhook, name, remaining, game.JobId)
+    if Config.StopOnEventServer then
+        hopLock           = true
+        localStats.status = "Stopped on " .. name
+    end
+    return true
+end
+
+local function buildUI()
+    local playerGui = lp:WaitForChild("PlayerGui")
+    local existing  = playerGui:FindFirstChild("__ServerHopUI__")
+    if existing then existing:Destroy() end
+
+    local PALETTE = {
+        bg     = Color3.fromRGB(3,   4,   8),
+        panel  = Color3.fromRGB(8,   10,  17),
+        alt    = Color3.fromRGB(12,  14,  23),
+        border = Color3.fromRGB(22,  28,  46),
+        accent = Color3.fromRGB(70,  150, 255),
+        green  = Color3.fromRGB(70,  210, 100),
+        gold   = Color3.fromRGB(255, 210, 60),
+        red    = Color3.fromRGB(255, 80,  80),
+        text   = Color3.fromRGB(210, 220, 240),
+        dim    = Color3.fromRGB(80,  92,  118),
+    }
+
+    local function make(class, props, parent)
+        local obj = Instance.new(class)
+        for k, v in pairs(props) do obj[k] = v end
+        if parent then obj.Parent = parent end
+        return obj
+    end
+
+    local function corner(p, r)
+        make("UICorner", { CornerRadius = UDim.new(0, r or 8) }, p)
+    end
+
+    local function stroke(p, c, t)
+        make("UIStroke", { Color = c or PALETTE.border, Thickness = t or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, p)
+    end
+
+    local sg = make("ScreenGui", {
+        Name           = "__ServerHopUI__",
+        ResetOnSpawn   = false,
+        IgnoreGuiInset = true,
+        DisplayOrder   = 99999,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, playerGui)
+
+    local bg = make("Frame", {
+        Size             = UDim2.fromScale(1, 1),
+        BackgroundColor3 = PALETTE.bg,
+        BorderSizePixel  = 0,
+    }, sg)
+
+    make("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0,   Color3.fromRGB(4,  5,  14)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(6,  7,  18)),
+            ColorSequenceKeypoint.new(1,   Color3.fromRGB(3,  4,  10)),
+        }),
+        Rotation = 135,
+    }, bg)
+
+    local tl = make("Frame", {
+        Size             = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = PALETTE.accent,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel  = 0,
+        ZIndex           = 2,
+    }, bg)
+    make("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0,0,0)), ColorSequenceKeypoint.new(0.3, Color3.new(1,1,1)), ColorSequenceKeypoint.new(0.7, Color3.new(1,1,1)), ColorSequenceKeypoint.new(1, Color3.new(0,0,0)) }) }, tl)
+
+    local bl = make("Frame", {
+        Size             = UDim2.new(1, 0, 0, 2),
+        Position         = UDim2.new(0, 0, 1, -2),
+        BackgroundColor3 = PALETTE.accent,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel  = 0,
+        ZIndex           = 2,
+    }, bg)
+    make("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0,0,0)), ColorSequenceKeypoint.new(0.3, Color3.new(1,1,1)), ColorSequenceKeypoint.new(0.7, Color3.new(1,1,1)), ColorSequenceKeypoint.new(1, Color3.new(0,0,0)) }) }, bl)
+
+    local content = make("Frame", {
+        Size             = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel  = 0,
+        ZIndex           = 3,
+    }, bg)
+
+    local header = make("Frame", {
+        Size             = UDim2.new(1, 0, 0, 72),
+        BackgroundColor3 = PALETTE.panel,
+        BorderSizePixel  = 0,
+        ZIndex           = 4,
+    }, content)
+
+    make("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 15, 26)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(7,  9,  17)),
+        }),
+        Rotation = 90,
+    }, header)
+
+    local headerBorder = make("Frame", {
+        Size             = UDim2.new(1, 0, 0, 1),
+        Position         = UDim2.new(0, 0, 1, -1),
+        BackgroundColor3 = PALETTE.accent,
+        BackgroundTransparency = 0.6,
+        BorderSizePixel  = 0,
+        ZIndex           = 5,
+    }, header)
+    make("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0,0,0)), ColorSequenceKeypoint.new(0.2, Color3.new(1,1,1)), ColorSequenceKeypoint.new(0.8, Color3.new(1,1,1)), ColorSequenceKeypoint.new(1, Color3.new(0,0,0)) }) }, headerBorder)
+
+    make("TextLabel", {
+        Size                   = UDim2.new(0.5, 0, 0, 34),
+        Position               = UDim2.fromOffset(24, 12),
+        BackgroundTransparency = 1,
+        Text                   = "Event Hopper",
+        TextColor3             = PALETTE.text,
+        Font                   = Enum.Font.GothamBold,
+        TextSize               = 22,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 5,
+    }, header)
+
+    make("TextLabel", {
+        Size                   = UDim2.new(0.5, 0, 0, 22),
+        Position               = UDim2.fromOffset(24, 44),
+        BackgroundTransparency = 1,
+        Text                   = table.concat(Config.TargetEvents, " / ") .. "  •  " .. tostring(lp.Name),
+        TextColor3             = PALETTE.accent,
+        Font                   = Enum.Font.Gotham,
+        TextSize               = 14,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 5,
+    }, header)
+
+    local cardsRow = make("Frame", {
+        Size             = UDim2.new(1, -40, 0, 180),
+        Position         = UDim2.fromOffset(20, 92),
+        BackgroundTransparency = 1,
+        BorderSizePixel  = 0,
+        ZIndex           = 4,
+    }, content)
+
+    local function makeCard(parent, idx, total, label, valueColor)
+        local gap   = 16
+        local cardW = (1 / total)
+        local card  = make("Frame", {
+            Size             = UDim2.new(cardW, idx < total and -gap or 0, 1, 0),
+            Position         = UDim2.new(cardW * (idx - 1), idx > 1 and gap * (idx - 1) or 0, 0, 0),
+            BackgroundColor3 = PALETTE.panel,
+            BorderSizePixel  = 0,
+            ZIndex           = 5,
+        }, parent)
+        corner(card, 14)
+        stroke(card, PALETTE.border, 1)
+        make("UIGradient", {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(11, 14, 24)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(7,  9,  16)),
+            }),
+            Rotation = 90,
+        }, card)
+        local cardTop = make("Frame", {
+            Size             = UDim2.new(0.5, 0, 0, 3),
+            Position         = UDim2.fromScale(0.25, 0),
+            BackgroundColor3 = valueColor,
+            BackgroundTransparency = 0.3,
+            BorderSizePixel  = 0,
+            ZIndex           = 6,
+        }, card)
+        corner(cardTop, 2)
+        make("TextLabel", {
+            Size                   = UDim2.new(1, -24, 0, 22),
+            Position               = UDim2.fromOffset(16, 20),
+            BackgroundTransparency = 1,
+            Text                   = label,
+            TextColor3             = PALETTE.dim,
+            Font                   = Enum.Font.Gotham,
+            TextSize               = 13,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 6,
+        }, card)
+        local val = make("TextLabel", {
+            Size                   = UDim2.new(1, -24, 0, 72),
+            Position               = UDim2.fromOffset(16, 46),
+            BackgroundTransparency = 1,
+            Text                   = "0",
+            TextColor3             = valueColor,
+            Font                   = Enum.Font.GothamBold,
+            TextSize               = 58,
+            TextXAlignment         = Enum.TextXAlignment.Left,
+            ZIndex                 = 6,
+        }, card)
+        return val
+    end
+
+    local joinedVal = makeCard(cardsRow, 1, 4, "SERVERS JOINED", PALETTE.green)
+    local failedVal = makeCard(cardsRow, 2, 4, "FAILED",          PALETTE.red)
+    local eventVal  = makeCard(cardsRow, 3, 4, "EVENTS FOUND",    PALETTE.gold)
+    local queueVal  = makeCard(cardsRow, 4, 4, "QUEUE",           PALETTE.accent)
+
+    local filesBar = make("Frame", {
+        Size             = UDim2.new(1, -40, 0, 56),
+        Position         = UDim2.fromOffset(20, 292),
+        BackgroundColor3 = PALETTE.panel,
+        BorderSizePixel  = 0,
+        ZIndex           = 4,
+    }, content)
+    corner(filesBar, 12)
+    stroke(filesBar, PALETTE.border, 1)
+
+    make("TextLabel", {
+        Size                   = UDim2.new(0.15, 0, 1, 0),
+        Position               = UDim2.fromOffset(20, 0),
+        BackgroundTransparency = 1,
+        Text                   = "FILES",
+        TextColor3             = PALETTE.dim,
+        Font                   = Enum.Font.Gotham,
+        TextSize               = 12,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 5,
+    }, filesBar)
+
+    make("TextLabel", {
+        Size                   = UDim2.new(0.8, 0, 1, 0),
+        Position               = UDim2.new(0.18, 0, 0, 0),
+        BackgroundTransparency = 1,
+        Text                   = FILE_SHARED_QUEUE .. "   /   " .. FILE_SHARED_CLAIMED .. "   /   " .. FILE_SHARED_VISITED .. "   /   " .. FILE_ACCOUNT_STATS,
+        TextColor3             = PALETTE.accent,
+        Font                   = Enum.Font.GothamBold,
+        TextSize               = 13,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 5,
+    }, filesBar)
+
+    local statusBar = make("Frame", {
+        Size             = UDim2.new(1, -40, 0, 60),
+        Position         = UDim2.fromOffset(20, 364),
+        BackgroundColor3 = PALETTE.panel,
+        BorderSizePixel  = 0,
+        ZIndex           = 4,
+    }, content)
+    corner(statusBar, 12)
+    stroke(statusBar, PALETTE.accent, 1)
+    make("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 16, 30)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(7,  9,  18)),
+        }),
+        Rotation = 0,
+    }, statusBar)
+
+    local dot = make("Frame", {
+        Size             = UDim2.new(0, 12, 0, 12),
+        Position         = UDim2.fromOffset(18, 24),
+        BackgroundColor3 = PALETTE.accent,
+        BorderSizePixel  = 0,
+        ZIndex           = 5,
+    }, statusBar)
+    corner(dot, 6)
+
+    local statusLbl = make("TextLabel", {
+        Size                   = UDim2.new(1, -50, 1, 0),
+        Position               = UDim2.fromOffset(40, 0),
+        BackgroundTransparency = 1,
+        Text                   = "Starting...",
+        TextColor3             = PALETTE.accent,
+        Font                   = Enum.Font.GothamBold,
+        TextSize               = 16,
+        TextXAlignment         = Enum.TextXAlignment.Left,
+        ZIndex                 = 5,
+    }, statusBar)
+
+    task.spawn(function()
+        while sg.Parent do
+            TweenService:Create(dot, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), { BackgroundTransparency = 0.65 }):Play()
+            task.wait(0.9)
+            TweenService:Create(dot, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), { BackgroundTransparency = 0 }):Play()
+            task.wait(0.9)
+        end
+    end)
+
+    content.Position = UDim2.new(0, 0, -1, 0)
+    TweenService:Create(content, TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+        Position = UDim2.fromScale(0, 0)
+    }):Play()
+
+    local lastStatus = ""
+    RunService.Heartbeat:Connect(function()
+        if not sg.Parent then return end
+        joinedVal.Text = tostring(localStats.totalJoined)
+        failedVal.Text = tostring(localStats.totalFailed)
+        eventVal.Text  = tostring(localStats.eventsFound)
+        queueVal.Text  = tostring(localQueueSize)
+
+        if localStats.status ~= lastStatus then
+            lastStatus = localStats.status
+            TweenService:Create(statusLbl, TweenInfo.new(0.1), { TextTransparency = 1 }):Play()
+            task.delay(0.1, function()
+                if not sg.Parent then return end
+                statusLbl.Text = localStats.status
+                local col = PALETTE.accent
+                if localStats.status:find("RAINBOW")  then col = PALETTE.gold  end
+                if localStats.status:find("INFERNAL") then col = PALETTE.red   end
+                if localStats.status:find("Stopped")  then col = PALETTE.gold  end
+                if localStats.status:find("Joined")   then col = PALETTE.green end
+                if localStats.status:find("Failed")   then col = PALETTE.red   end
+                if localStats.status:find("Fetch")    then col = PALETTE.dim   end
+                statusLbl.TextColor3 = col
+                dot.BackgroundColor3 = col
+                TweenService:Create(statusLbl, TweenInfo.new(0.15), { TextTransparency = 0 }):Play()
+            end)
+        end
+    end)
+end
+
+local function applyOptimization()
+    pcall(function() settings().Rendering.QualityLevel = 1 end)
+    pcall(function()
+        Lighting.GlobalShadows   = false
+        Lighting.FogEnd          = 9e9
+        Lighting.Brightness      = 0
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
+    end)
+    pcall(function()
+        local LODController = workspace:FindFirstChildOfClass("LODController")
+        if LODController then LODController.FramesBudget = 0 end
+    end)
+end
+
+local function teleportToServer(jobId, attempt)
+    attempt = attempt or 1
+    localStats.status = "Hopping → " .. jobId:sub(1, 8) .. "..."
+    dprint("Teleport attempt", attempt, "->", jobId)
+
+    local ok, err = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, placeId, jobId, lp)
+
+    if not ok then
+        dprint("Teleport error:", err)
+        if Config.RetryFailedTeleport and attempt < Config.MaxTeleportRetries then
+            task.wait(2 ^ attempt)
+            return teleportToServer(jobId, attempt + 1)
+        end
+        releaseClaim(jobId)
+        markFailed(jobId)
+        localStats.totalFailed = localStats.totalFailed + 1
+        localStats.status      = "Failed: " .. jobId:sub(1, 8)
+        saveAccountStats()
+        return false
+    end
+
+    markVisited(jobId)
+    localStats.totalJoined = localStats.totalJoined + 1
+    localStats.status      = "Joined #" .. localStats.totalJoined
+    dprint("Teleport dispatched. joined =", localStats.totalJoined)
+    saveAccountStats()
+    task.wait(10)
+    return true
+end
+
+local function run()
+    print("[ServerHop] Starting — Account:", accountKey, "Targets:", table.concat(Config.TargetEvents, ", "))
+
+    buildUI()
+    applyOptimization()
+    loadAccountStats()
+    loadLocalSets()
+
+    markVisited(game.JobId)
+
+    task.wait(math.random(0, 3) + (tonumber(accountKey:sub(-3)) or 0) % 5)
+
+    local found = checkAndHandleEvent()
+    if found and Config.StopOnEventServer then
+        print("[ServerHop] Target event on current server. Stopped.")
+        return
+    end
+
+    if shouldRefetch() then refillSharedQueue() end
+
+    while not hopLock do
+        if shouldRefetch() then
+            refillSharedQueue()
+        end
+
+        local q = readJSON(FILE_SHARED_QUEUE)
+        localQueueSize = (q and type(q.data) == "table") and #q.data or 0
+
+        if localQueueSize == 0 then
+            print("[ServerHop] Queue empty. Stopping.")
+            localStats.status = "No servers found"
+            break
+        end
+
+        local jobId = popFromSharedQueue()
+        if not jobId then
+            task.wait(1)
+            continue
+        end
+
+        if not tryClaimServer(jobId) then
+            dprint("Claim failed for", jobId, "— already taken")
+            task.wait(0.3)
+            continue
+        end
+
+        local success = teleportToServer(jobId)
+
+        if success then
+            task.wait(3)
+            checkAndHandleEvent()
+            if hopLock then break end
+        end
+
+        task.wait(0.5)
+    end
+
+    print("[ServerHop] Session ended.")
+    localStats.status = "Session ended"
+end
+
+run()
