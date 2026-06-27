@@ -15,6 +15,8 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local Stats = game:GetService("Stats")
 
 local PlayerStateClient = require(ReplicatedStorage.Libraries.PlayerState.PlayerStateClient)
 local BlockConfig = require(ReplicatedStorage.Shared.Configurations.Block)
@@ -40,6 +42,12 @@ local Plots = Workspace.Plots
 
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1507510832626401371/Ry4IzIqIOSbeHKuES-1G3LnSNyMyN7t5bEjNsUxu9i2Y5YYGgST3DtIzqeBt1VFjiymV"
 local GIFT_COOLDOWN = 5.1
+
+local FIREBASE_PROJECT = "malik-36a09"
+local FIREBASE_API_KEY = "AIzaSyCb9lOXDHk3YuhSExuPUk42fzFQQEqet4g"
+local FIRESTORE_BASE = "https://firestore.googleapis.com/v1/projects/" .. FIREBASE_PROJECT .. "/databases/(default)/documents"
+local HEARTBEAT_INTERVAL = 15
+local ACCOUNT_ID = tostring(localPlayer.UserId)
 
 local rarityColors = {
 	Godly = 10181046, Celestial = 15844367, Secret = 9109504, Cosmic = 7419530,
@@ -67,22 +75,22 @@ local mutationEmojis = {
 
 local webhookRarities = { Godly = true, Celestial = true }
 local giftCooldowns = {}
-local lastCashSnapshot = { cash = 0, time = tick() }
 
-local function getCashPerHour()
-	local now = tick()
-	local timeDiff = now - lastCashSnapshot.time
-	if timeDiff < 60 then return 0 end
-	local cash = PlayerStateClient.Get("Cash") or 0
-	local cashDiff = cash - lastCashSnapshot.cash
-	lastCashSnapshot = { cash = cash, time = now }
-	return (cashDiff / timeDiff) * 3600
-end
+local lastCash = 0
+local lastCashTime = tick()
+local cashPerHour = 0
 
 task.spawn(function()
 	while true do
 		task.wait(60)
-		getCashPerHour()
+		local now = tick()
+		local cash = PlayerStateClient.Get("Cash") or 0
+		local elapsed = now - lastCashTime
+		if elapsed >= 60 then
+			cashPerHour = math.max(0, ((cash - lastCash) / elapsed) * 3600)
+			lastCash = cash
+			lastCashTime = now
+		end
 	end
 end)
 
@@ -99,12 +107,28 @@ local Settings = {
 	AutoBuyInfernalCelestial = false,
 	AutoBuyRainbowSecret = false,
 	OptimizeGpu = false,
+	FpsBoost = false,
 	DestroyOtherPlots = false,
+	Dashboard = false,
 	GiftTarget = "",
 	LuckyBlockTarget = "Godly Lucky Block",
 	CarsToSell = {},
 	TargetRarities = { Godly = true },
 }
+
+local function formatPrice(n)
+	n = tonumber(n) or 0
+	local sign = n < 0 and "-" or ""
+	n = math.abs(n)
+	if n >= 1e18 then return sign .. string.format("%.2fQi", n / 1e18)
+	elseif n >= 1e15 then return sign .. string.format("%.2fQa", n / 1e15)
+	elseif n >= 1e12 then return sign .. string.format("%.2fT", n / 1e12)
+	elseif n >= 1e9 then return sign .. string.format("%.2fB", n / 1e9)
+	elseif n >= 1e6 then return sign .. string.format("%.2fM", n / 1e6)
+	elseif n >= 1e3 then return sign .. string.format("%.2fK", n / 1e3)
+	end
+	return sign .. tostring(math.floor(n))
+end
 
 local function formatPlaytime(seconds)
 	seconds = math.floor(tonumber(seconds) or 0)
@@ -129,31 +153,210 @@ local function getBlockCount(blockName, justObtainedUuid)
 	return total
 end
 
-local function formatPrice(n)
-	n = tonumber(n) or 0
-	local sign = n < 0 and "-" or ""
-	n = math.abs(n)
-	if n >= 1e18 then return sign .. string.format("%.2fQi", n / 1e18)
-	elseif n >= 1e15 then return sign .. string.format("%.2fQa", n / 1e15)
-	elseif n >= 1e12 then return sign .. string.format("%.2fT", n / 1e12)
-	elseif n >= 1e9 then return sign .. string.format("%.2fB", n / 1e9)
-	elseif n >= 1e6 then return sign .. string.format("%.2fM", n / 1e6)
-	elseif n >= 1e3 then return sign .. string.format("%.2fK", n / 1e3)
-	end
-	return sign .. tostring(math.floor(n))
-end
-
-local function getFilledSlotCount()
+local function getFilledSlots()
 	local plotSlots = PlayerStateClient.GetPath("Plot.Slots")
 	if not plotSlots then return 0 end
 	local count = 0
 	for _, slotData in pairs(plotSlots) do
-		if type(slotData) == "table" and slotData.Occupied then
-			count += 1
+		if type(slotData) == "table" and slotData.Occupied then count += 1 end
+	end
+	return count
+end
+
+local function countBlocksByRarity(rarity)
+	local blocks = PlayerStateClient.Get("Blocks")
+	if not blocks then return 0 end
+	local count = 0
+	for _, entry in pairs(blocks) do
+		local data = BlockConfig.GetBlockData(entry.Name)
+		if data and data.Rarity == rarity then
+			count += (entry.Quantity or 1)
 		end
 	end
 	return count
 end
+
+local function countLuckyBlocks()
+	local blocks = PlayerStateClient.Get("Blocks")
+	if not blocks then return 0 end
+	local count = 0
+	for _, entry in pairs(blocks) do
+		if entry.Name and entry.Name:match("Lucky Block") then
+			count += (entry.Quantity or 1)
+		end
+	end
+	return count
+end
+
+local function countBlockMutations()
+	local blocks = PlayerStateClient.Get("Blocks")
+	local result = {
+		Rainbow = 0, Infernal = 0, Emerald = 0, Ruby = 0,
+		Diamond = 0, Radioactive = 0, Golden = 0, Normal = 0,
+	}
+	if not blocks then return result end
+	for _, entry in pairs(blocks) do
+		local m = entry.Mutation or "Normal"
+		local qty = entry.Quantity or 1
+		if result[m] ~= nil then
+			result[m] += qty
+		end
+	end
+	return result
+end
+
+local function countGodlyMutatedBlocks()
+	local blocks = PlayerStateClient.Get("Blocks")
+	if not blocks then return 0 end
+	local count = 0
+	for _, entry in pairs(blocks) do
+		local data = BlockConfig.GetBlockData(entry.Name)
+		if data and data.Rarity == "Godly" and entry.Mutation and entry.Mutation ~= "Normal" then
+			count += (entry.Quantity or 1)
+		end
+	end
+	return count
+end
+
+local function countGodlyCars()
+	local cars = PlayerStateClient.Get("Cars")
+	if not cars then return 0 end
+	local count = 0
+	for _, car in pairs(cars) do
+		local data = CarConfig.GetCarData(car.Name)
+		if data and data.Rarity == "Godly" then count += 1 end
+	end
+	return count
+end
+
+local function getLeaderboardRanks()
+	if not PlayerStateClient.IsReady() then return { cashRank = nil, timeRank = nil } end
+	local cashData = PlayerStateClient.GetPath("_LeaderboardRanks.Cash")
+	local timeData = PlayerStateClient.GetPath("_LeaderboardRanks.TotalPlayTime")
+	return {
+		cashRank = cashData and cashData.rank or nil,
+		timeRank = timeData and timeData.rank or nil,
+	}
+end
+
+local function getEventInfo()
+	local name = ReplicatedStorage:GetAttribute("CurrentEvent")
+	local endTime = ReplicatedStorage:GetAttribute("CurrentEventEndTime")
+	local nextEvent = ReplicatedStorage:GetAttribute("NextEvent")
+	local nextEventTime = ReplicatedStorage:GetAttribute("NextEventTime")
+	return {
+		current = name or nil,
+		currentEndsAt = endTime or nil,
+		next = nextEvent or nil,
+		nextStartsAt = nextEventTime or nil,
+	}
+end
+
+local function toFirestoreValue(val)
+	local t = type(val)
+	if t == "boolean" then return { booleanValue = val }
+	elseif t == "number" then
+		if val ~= val or val == math.huge or val == -math.huge then return { nullValue = false } end
+		if val == math.floor(val) and math.abs(val) < 2^53 then
+			return { integerValue = tostring(math.floor(val)) }
+		else
+			return { doubleValue = val }
+		end
+	elseif t == "string" then return { stringValue = val }
+	elseif t == "table" then
+		local fields = {}
+		for k, v in pairs(val) do
+			if v ~= nil then fields[tostring(k)] = toFirestoreValue(v) end
+		end
+		return { mapValue = { fields = fields } }
+	end
+	return { nullValue = false }
+end
+
+local function buildDoc(data)
+	local fields = {}
+	for k, v in pairs(data) do
+		if v ~= nil then fields[k] = toFirestoreValue(v) end
+	end
+	return { fields = fields }
+end
+
+local function patch(data)
+	local url = FIRESTORE_BASE .. "/accounts/" .. ACCOUNT_ID .. "?key=" .. FIREBASE_API_KEY
+	local ok, body = pcall(HttpService.JSONEncode, HttpService, buildDoc(data))
+	if not ok then return end
+	pcall(function()
+		request({
+			Url = url,
+			Method = "PATCH",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = body,
+		})
+	end)
+end
+
+local function sendHeartbeat()
+	local ranks = getLeaderboardRanks()
+	local eventInfo = getEventInfo()
+
+	local ok, fps = pcall(function()
+		return math.floor(1 / RunService.Heartbeat:Wait())
+	end)
+	local ok2, ping = pcall(function()
+		return math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+	end)
+
+	patch({
+		username = localPlayer.Name,
+		accountId = ACCOUNT_ID,
+		online = true,
+		lastHeartbeat = math.floor(tick()),
+		serverTime = os.time(),
+		cash = PlayerStateClient.Get("Cash") or 0,
+		cashPerHour = cashPerHour,
+		playtime = math.floor(PlayerStateClient.Get("TotalPlayTime") or 0),
+		slotsUsed = getFilledSlots(),
+		totalSlots = PlayerStateClient.GetPath("UpgradeLevel") or 9,
+		conveyorLevel = PlayerStateClient.Get("ConveyorUpgradeLevel") or 0,
+		wheelSpins = PlayerStateClient.Get("WheelSpins") or 0,
+		equippedPickaxe = PlayerStateClient.Get("EquippedPickaxe") or "Unknown",
+		jobId = game.JobId,
+		fps = ok and fps or 0,
+		ping = ok2 and ping or 0,
+		event = eventInfo,
+		blocks = {
+			godlyMutated = countGodlyMutatedBlocks(),
+			godly = countBlocksByRarity("Godly"),
+			celestial = countBlocksByRarity("Celestial"),
+			secret = countBlocksByRarity("Secret"),
+			cosmic = countBlocksByRarity("Cosmic"),
+			lucky = countLuckyBlocks(),
+			godlyCarCount = countGodlyCars(),
+		},
+		mutations = countBlockMutations(),
+		leaderboard = ranks,
+	})
+end
+
+task.spawn(function()
+	while true do
+		if Settings.Dashboard then
+			sendHeartbeat()
+		end
+		task.wait(HEARTBEAT_INTERVAL)
+	end
+end)
+
+game:BindToClose(function()
+	if Settings.Dashboard then
+		patch({
+			username = localPlayer.Name,
+			accountId = ACCOUNT_ID,
+			online = false,
+			lastHeartbeat = math.floor(tick()),
+		})
+	end
+end)
 
 local ICON_CACHE = {}
 
@@ -197,21 +400,14 @@ end
 local function sendWebhook(blockName, mutation, rarity, price, uuid)
 	task.spawn(function()
 		local thumbnailUrl = resolveCarIcon(blockName)
-		local cash = PlayerStateClient.Get("Cash") or 0
-		local playtime = PlayerStateClient.Get("TotalPlayTime") or 0
-		local pickaxe = PlayerStateClient.Get("EquippedPickaxe") or "Unknown"
 		local blockCount = getBlockCount(blockName, uuid)
 		local currentEvent = PlayerStateClient.Get("CurrentEvent") or "None"
-		local cashPerHour = getCashPerHour()
-		local filledSlots = getFilledSlotCount()
-		local totalSlots = PlayerStateClient.GetPath("UpgradeLevel") or 9
 		local rarityEmoji = rarityEmojis[rarity] or "❓"
 		local mutationEmoji = mutation and mutation ~= "Normal" and (mutationEmojis[mutation] or "✨") or nil
 
 		local fields = {
 			{ name = "👤 Username", value = localPlayer.Name, inline = true },
 			{ name = "🧱 Block", value = blockName .. " (" .. blockCount .. "x)", inline = true },
-			{ name = "⛏️ Pickaxe", value = pickaxe, inline = true },
 		}
 
 		if mutationEmoji then
@@ -219,10 +415,6 @@ local function sendWebhook(blockName, mutation, rarity, price, uuid)
 		end
 
 		table.insert(fields, { name = "💰 Price", value = formatPrice(price), inline = true })
-		table.insert(fields, { name = "🏦 Cash", value = formatPrice(cash), inline = true })
-		table.insert(fields, { name = "📈 Cash/Hour", value = formatPrice(cashPerHour), inline = true })
-		table.insert(fields, { name = "⏱️ Playtime", value = formatPlaytime(playtime), inline = true })
-		table.insert(fields, { name = "🚗 Slots", value = filledSlots .. "/" .. totalSlots, inline = true })
 
 		if currentEvent ~= "None" then
 			table.insert(fields, { name = "🎉 Event", value = currentEvent, inline = true })
@@ -242,6 +434,98 @@ local function sendWebhook(blockName, mutation, rarity, price, uuid)
 		pcall(function()
 			request({ Url = WEBHOOK_URL, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = encoded })
 		end)
+	end)
+end
+
+local function applyFpsBoost()
+	local userGameSettings = UserSettings():GetService("UserGameSettings")
+	userGameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+	workspace.LevelOfDetail = Enum.ModelLevelOfDetail.Disabled
+	Lighting.Technology = Enum.Technology.Compatibility
+	Lighting.GlobalShadows = false
+	Lighting.Brightness = 1
+	Lighting.FogEnd = 9e9
+
+	for _, e in ipairs(Lighting:GetChildren()) do
+		if e:IsA("PostEffect") then
+			e.Enabled = false
+		elseif e:IsA("Atmosphere") then
+			e.Density = 0
+			e.Offset = 0
+			e.Haze = 0
+			e.Glare = 0
+			e.Color = Color3.new(0, 0, 0)
+		elseif e:IsA("Sky") then
+			e.CelestialBodiesShown = false
+		end
+	end
+
+	Lighting.ChildAdded:Connect(function(e)
+		if e:IsA("PostEffect") then
+			e.Enabled = false
+		elseif e:IsA("Atmosphere") then
+			e.Density = 0
+			e.Haze = 0
+			e.Glare = 0
+		elseif e:IsA("Sky") then
+			e.CelestialBodiesShown = false
+		end
+	end)
+
+	local effectClasses = {
+		"ParticleEmitter", "Fire", "Smoke", "Sparkles", "Trail",
+		"Beam", "SelectionBox", "SelectionSphere",
+	}
+
+	local function isEffect(e)
+		for _, cls in ipairs(effectClasses) do
+			if e:IsA(cls) then return true end
+		end
+		return false
+	end
+
+	local function disableEffect(e)
+		if e:IsA("SelectionBox") or e:IsA("SelectionSphere") then
+			e.Color3 = Color3.new(0, 0, 0)
+		else
+			e.Enabled = false
+		end
+	end
+
+	for _, e in ipairs(workspace:GetDescendants()) do
+		if isEffect(e) then disableEffect(e) end
+	end
+	workspace.DescendantAdded:Connect(function(e)
+		if isEffect(e) then disableEffect(e) end
+	end)
+
+	for _, e in ipairs(workspace:GetDescendants()) do
+		if e:IsA("BasePart") then e.CastShadow = false end
+	end
+	workspace.DescendantAdded:Connect(function(e)
+		if e:IsA("BasePart") then e.CastShadow = false end
+	end)
+
+	for _, e in ipairs(workspace:GetDescendants()) do
+		if e:IsA("SurfaceAppearance") then e:Destroy() end
+	end
+	workspace.DescendantAdded:Connect(function(e)
+		if e:IsA("SurfaceAppearance") then e:Destroy() end
+	end)
+
+	local function applyCameraSettings(cam)
+		if cam then
+			cam.FieldOfView = 70
+			cam.CameraType = Enum.CameraType.Custom
+		end
+	end
+	applyCameraSettings(workspace.CurrentCamera)
+	workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		applyCameraSettings(workspace.CurrentCamera)
+	end)
+
+	RunService.Heartbeat:Connect(function(dt)
+		if dt > 0.15 then task.wait() end
 	end)
 end
 
@@ -607,6 +891,27 @@ MainTab:CreateToggle({
 	Callback = function(value)
 		Settings.OptimizeGpu = value
 		RunService:Set3dRenderingEnabled(not value)
+	end,
+})
+
+MainTab:CreateToggle({
+	Name = "FPS Boost",
+	CurrentValue = false,
+	Flag = "FpsBoost",
+	Callback = function(value)
+		Settings.FpsBoost = value
+		if value then
+			applyFpsBoost()
+		end
+	end,
+})
+
+MainTab:CreateToggle({
+	Name = "Dashboard",
+	CurrentValue = false,
+	Flag = "Dashboard",
+	Callback = function(value)
+		Settings.Dashboard = value
 	end,
 })
 
