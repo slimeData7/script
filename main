@@ -130,19 +130,11 @@ local function formatPrice(n)
 	return sign .. tostring(math.floor(n))
 end
 
-local function formatPlaytime(seconds)
-	seconds = math.floor(tonumber(seconds) or 0)
-	local h = math.floor(seconds / 3600)
-	local m = math.floor((seconds % 3600) / 60)
-	if h > 0 then return string.format("%dh %dm", h, m) end
-	return string.format("%dm", m)
-end
-
 local function getBlockCount(blockName, justObtainedUuid)
 	local blocks = PlayerStateClient.Get("Blocks")
 	if not blocks then return justObtainedUuid and 1 or 0 end
 	local total = 0
-	for uuid, entry in pairs(blocks) do
+	for _, entry in pairs(blocks) do
 		if entry.Name == blockName then
 			total += (entry.Quantity or 1)
 		end
@@ -196,10 +188,13 @@ local function countBlockMutations()
 	}
 	if not blocks then return result end
 	for _, entry in pairs(blocks) do
-		local m = entry.Mutation or "Normal"
-		local qty = entry.Quantity or 1
-		if result[m] ~= nil then
-			result[m] += qty
+		local data = BlockConfig.GetBlockData(entry.Name)
+		if data and data.Rarity == "Godly" then
+			local m = entry.Mutation or "Normal"
+			local qty = entry.Quantity or 1
+			if result[m] ~= nil then
+				result[m] += qty
+			end
 		end
 	end
 	return result
@@ -324,8 +319,8 @@ local function sendHeartbeat()
 		fps = ok and fps or 0,
 		ping = ok2 and ping or 0,
 		event = eventInfo,
+		godlyMutated = countGodlyMutatedBlocks(),
 		blocks = {
-			godlyMutated = countGodlyMutatedBlocks(),
 			godly = countBlocksByRarity("Godly"),
 			celestial = countBlocksByRarity("Celestial"),
 			secret = countBlocksByRarity("Secret"),
