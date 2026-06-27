@@ -347,7 +347,7 @@ task.spawn(function()
 	end
 end)
 
-game:BindToClose(function()
+localPlayer.AncestryChanged:Connect(function()
 	if Settings.Dashboard then
 		patch({
 			username = localPlayer.Name,
